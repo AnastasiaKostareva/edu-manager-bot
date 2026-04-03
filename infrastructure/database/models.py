@@ -27,8 +27,7 @@ class NotificationProfile(models.Model):
     """
     id = fields.IntField(pk=True)
     title = fields.CharField(max_length=255, null=False)
-    # INTEGER ARRAY не поддерживается напрямую, используем JSONField
-    reminder_intervals = pg_fields.ArrayField(int, null=False) 
+    reminder_intervals = pg_fields.ArrayField('INT', null=False) 
     max_reminders_per_day = fields.IntField(default=5, null=False)
     is_active = fields.BooleanField(default=True)
 
