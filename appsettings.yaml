@@ -1,0 +1,24 @@
+bot:
+  name: lesson_assistant_bot
+  token: "8288568755:AAGGv88DUJgVjfd6fJBthE9QoSLP5zTwfDw"
+  description: "Telegram bot for managing online lessons and reminders"
+
+roles:
+  - student
+  - teacher
+  - admin
+  - owner
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: "1"
+  database: "edu_manager"
+
+scheduler:
+  check_interval_seconds: 60
+  reminder_before_minutes: 5
+
+admins:
+  - "123456789"

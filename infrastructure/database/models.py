@@ -114,10 +114,12 @@ class Lesson(models.Model):
         source_field="created_by",
         to_field="telegram_id"
     )
+    lesson_link = fields.TextField(null=True)
+    repeat_type = fields.CharField(max_length=50, null=True)
     scheduled_at = fields.DatetimeField()
-    actual_start = fields.DatetimeField()
-    scheduled_end = fields.DatetimeField()
-    actual_end = fields.DatetimeField()
+    actual_start = fields.DatetimeField(null=True)
+    scheduled_end = fields.DatetimeField(null=True)
+    actual_end = fields.DatetimeField(null=True)
     duration_minutes = fields.IntField(null=True)
     
     status = fields.CharField(
@@ -166,3 +168,37 @@ class SavedQuery(models.Model):
 
     def __str__(self):
         return f"Query({self.id}, {self.title})"
+
+
+class Reminder(models.Model):
+    """
+    Таблица reminders
+    """
+    id = fields.IntField(pk=True)
+    user = fields.ForeignKeyField(
+        "models.User",
+        related_name="reminders",
+        on_delete=fields.CASCADE,
+        source_field="user_id",
+        to_field="telegram_id"
+    )
+    lesson = fields.ForeignKeyField(
+        "models.Lesson",
+        related_name="reminders",
+        on_delete=fields.CASCADE,
+        source_field="lesson_id",
+        to_field="id",
+        null=True
+    )
+    reminder_type = fields.CharField(max_length=50, null=False)
+    custom_text = fields.TextField(null=True)
+    remind_at = fields.DatetimeField()
+    is_sent = fields.BooleanField(default=False)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "reminders"
+        ordering = ["-remind_at"]
+
+    def __str__(self):
+        return f"Reminder({self.id}, {self.reminder_type})"
