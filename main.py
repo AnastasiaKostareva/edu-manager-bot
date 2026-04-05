@@ -1,31 +1,15 @@
 import asyncio
-import os
 import logging
-from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
 
-from application.config import load_config
 from infrastructure.database.db_config import init_db, close_db
-from infrastructure.telegram.handlers import router
+from infrastructure.telegram.bot import build_bot_and_dispatcher
 from infrastructure.monitoring.scheduler import Scheduler
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
-config = load_config()
-
-TOKEN_BOT = config.bot.token or os.getenv("TOKEN_BOT")
-if not TOKEN_BOT:
-    raise ValueError("TOKEN_BOT не найден в appsettings.yaml или .env файле")
-
-storage = MemoryStorage()
-bot = Bot(token=TOKEN_BOT)
-dp = Dispatcher(storage=storage)
-
-dp.include_router(router)
+bot, dp = build_bot_and_dispatcher()
 
 
 async def main():
