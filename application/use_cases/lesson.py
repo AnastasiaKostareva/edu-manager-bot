@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from domain.entities import Lesson, LessonStatus, RepeatType, User, UserRole
 from domain.exceptions import PermissionDeniedException, ValidationException
@@ -51,3 +51,157 @@ class LessonService:
 
     async def get(self, lesson_id: int) -> Lesson | None:
         return await self._lesson_repo.get_by_id(lesson_id)
+
+    async def complete_lesson(
+        self,
+        *,
+        lesson_id: int,
+        actor: User,
+        duration_minutes: int,
+        actual_end: datetime | None = None,
+    ) -> Lesson:
+        """
+        Завершает занятие с фиксацией длительности.
+
+        Args:
+            lesson_id: ID занятия
+            actor: Пользователь, завершающий занятие (должен быть создателем)
+            duration_minutes: Фактическая длительность в минутах
+            actual_end: Фактическое время окончания (по умолчанию - сейчас)
+
+        Returns:
+            Обновленное занятие
+
+        Raises:
+            ValidationException: Если занятие не найдено или уже завершено
+            PermissionDeniedException: Если actor не имеет прав
+        """
+        lesson = await self._lesson_repo.get_by_id(lesson_id)
+        if not lesson:
+            raise ValidationException(f"Занятие {lesson_id} не найдено")
+
+        if lesson.status == LessonStatus.COMPLETED:
+            raise ValidationException("Занятие уже завершено")
+
+        # Проверка прав: только создатель или админ может завершить
+        if actor.role not in (UserRole.ADMIN, UserRole.OWNER):
+            if lesson.created_by != actor.telegram_id:
+                raise PermissionDeniedException("Только создатель занятия может его завершить")
+
+        if duration_minutes <= 0:
+            raise ValidationException("Длительность должна быть положительным числом")
+
+        lesson.status = LessonStatus.COMPLETED
+        lesson.duration_minutes = duration_minutes
+        lesson.actual_end = actual_end or datetime.now()
+        lesson.updated_at = datetime.now()
+
+        return await self._lesson_repo.update(lesson)
+
+    async def mark_overdue(self, lesson_id: int) -> Lesson:
+        """
+        Помечает занятие как просроченное (не закрыто в срок).
+
+        Args:
+            lesson_id: ID занятия
+
+        Returns:
+            Обновленное занятие
+        """
+        lesson = await self._lesson_repo.get_by_id(lesson_id)
+        if not lesson:
+            raise ValidationException(f"Занятие {lesson_id} не найдено")
+
+        lesson.status = LessonStatus.OVERDUE
+        lesson.updated_at = datetime.now()
+
+        return await self._lesson_repo.update(lesson)
+
+    async def get_lessons_needing_completion(self) -> list[Lesson]:
+        """
+        Получает список занятий, которые требуют завершения.
+        Это занятия со статусом SCHEDULED или IN_PROGRESS, у которых
+        scheduled_end или scheduled_at уже прошли.
+
+        Returns:
+            Список занятий, требующих завершения
+        """
+        from infrastructure.database.models import Lesson as LessonModel
+        now = datetime.now()
+
+        # Получаем все занятия, которые должны были закончиться
+        models = await LessonModel.filter(
+            status__in=[LessonStatus.SCHEDULED.value, LessonStatus.IN_PROGRESS.value],
+            scheduled_at__lt=now,
+        ).all()
+
+        lessons = []
+        for model in models:
+            # Проверяем, прошло ли время окончания
+            end_time = model.scheduled_end or (model.scheduled_at + timedelta(hours=1))
+            if end_time <= now:
+                from domain.entities import RepeatType
+                lesson = Lesson(
+                    id=model.id,
+                    chat_id=model.chat_id,
+                    created_by=model.created_by,
+                    lesson_link=model.lesson_link,
+                    repeat_type=RepeatType(model.repeat_type) if model.repeat_type else None,
+                    scheduled_at=model.scheduled_at,
+                    scheduled_end=model.scheduled_end,
+                    actual_start=model.actual_start,
+                    actual_end=model.actual_end,
+                    duration_minutes=model.duration_minutes,
+                    status=LessonStatus(model.status),
+                    topic=model.topic,
+                    created_at=model.created_at,
+                    updated_at=model.updated_at,
+                )
+                lessons.append(lesson)
+
+        return lessons
+
+    async def get_overdue_lessons(self, hours: int = 24) -> list[Lesson]:
+        """
+        Получает занятия, не закрытые в течение заданного времени после окончания.
+
+        Args:
+            hours: Количество часов после окончания занятия
+
+        Returns:
+            Список просроченных занятий
+        """
+        from infrastructure.database.models import Lesson as LessonModel
+        from datetime import timedelta
+
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+
+        models = await LessonModel.filter(
+            status__in=[LessonStatus.SCHEDULED.value, LessonStatus.IN_PROGRESS.value],
+            scheduled_at__lt=cutoff_time,
+        ).all()
+
+        lessons = []
+        for model in models:
+            end_time = model.scheduled_end or (model.scheduled_at + timedelta(hours=1))
+            if end_time <= cutoff_time:
+                from domain.entities import RepeatType
+                lesson = Lesson(
+                    id=model.id,
+                    chat_id=model.chat_id,
+                    created_by=model.created_by,
+                    lesson_link=model.lesson_link,
+                    repeat_type=RepeatType(model.repeat_type) if model.repeat_type else None,
+                    scheduled_at=model.scheduled_at,
+                    scheduled_end=model.scheduled_end,
+                    actual_start=model.actual_start,
+                    actual_end=model.actual_end,
+                    duration_minutes=model.duration_minutes,
+                    status=LessonStatus(model.status),
+                    topic=model.topic,
+                    created_at=model.created_at,
+                    updated_at=model.updated_at,
+                )
+                lessons.append(lesson)
+
+        return lessons

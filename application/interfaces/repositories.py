@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List
 from datetime import datetime
-from domain.entities import User, UserRole, Lesson, Reminder, Chat
+from domain.entities import User, UserRole, Lesson, Reminder, Chat, ChatMember
 
 
 class IUserRepository(ABC):
@@ -121,4 +121,22 @@ class IChatRepository(ABC):
 
     @abstractmethod
     async def get_all_active(self) -> List[Chat]:
+        pass
+
+
+class IChatMemberRepository(ABC):
+    @abstractmethod
+    async def get_by_chat_and_user(self, chat_id: int, user_id: int) -> Optional[ChatMember]:
+        pass
+
+    @abstractmethod
+    async def create(self, chat_member: ChatMember) -> ChatMember:
+        pass
+
+    @abstractmethod
+    async def get_members_by_chat(self, chat_id: int) -> List[ChatMember]:
+        pass
+
+    @abstractmethod
+    async def deactivate(self, chat_id: int, user_id: int) -> None:
         pass

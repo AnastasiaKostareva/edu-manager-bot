@@ -39,3 +39,7 @@ class SqlConsoleSG(StatesGroup):
 
 class StartLessonSG(StatesGroup):
     confirm = State()
+
+
+class CompleteLessonSG(StatesGroup):
+    custom_duration = State()

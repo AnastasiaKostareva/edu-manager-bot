@@ -3,13 +3,14 @@ from datetime import datetime
 
 from tortoise import Tortoise
 
-from domain.entities import User, UserRole, Lesson, LessonStatus, RepeatType, Reminder, Chat
+from domain.entities import User, UserRole, Lesson, LessonStatus, RepeatType, Reminder, Chat, ChatMember
 
 from application.interfaces.repositories import (
     IUserRepository,
     ILessonRepository,
     IReminderRepository,
     IChatRepository,
+    IChatMemberRepository,
 )
 
 
@@ -174,7 +175,7 @@ class LessonRepository(ILessonRepository):
         from infrastructure.database.models import Lesson as LessonModel
         model = await LessonModel.create(
             chat_id=lesson.chat_id,
-            created_by=lesson.created_by,
+            created_by_id=lesson.created_by,
             lesson_link=lesson.lesson_link,
             repeat_type=lesson.repeat_type.value if lesson.repeat_type else None,
             scheduled_at=lesson.scheduled_at,
@@ -211,7 +212,7 @@ class LessonRepository(ILessonRepository):
         return Lesson(
             id=model.id,
             chat_id=model.chat_id,
-            created_by=model.created_by,
+            created_by=model.created_by_id,
             lesson_link=model.lesson_link,
             repeat_type=RepeatType(model.repeat_type) if model.repeat_type else None,
             scheduled_at=model.scheduled_at,
@@ -328,5 +329,42 @@ class ChatRepository(IChatRepository):
             chat_title=model.chat_title,
             chat_type=model.chat_type,
             created_at=model.created_at,
+            is_active=model.is_active,
+        )
+
+
+class ChatMemberRepository(IChatMemberRepository):
+    async def get_by_chat_and_user(self, chat_id: int, user_id: int) -> Optional[ChatMember]:
+        from infrastructure.database.models import ChatMember as ChatMemberModel
+        model = await ChatMemberModel.get_or_none(chat_id=chat_id, user_id=user_id)
+        return self._to_entity(model) if model else None
+
+    async def create(self, chat_member: ChatMember) -> ChatMember:
+        from infrastructure.database.models import ChatMember as ChatMemberModel
+        model = await ChatMemberModel.create(
+            chat_id=chat_member.chat_id,
+            user_id=chat_member.user_id,
+            profile_id=chat_member.profile_id,
+            is_active=chat_member.is_active,
+        )
+        chat_member.id = model.id
+        return chat_member
+
+    async def get_members_by_chat(self, chat_id: int) -> List[ChatMember]:
+        from infrastructure.database.models import ChatMember as ChatMemberModel
+        models = await ChatMemberModel.filter(chat_id=chat_id, is_active=True)
+        return [self._to_entity(m) for m in models]
+
+    async def deactivate(self, chat_id: int, user_id: int) -> None:
+        from infrastructure.database.models import ChatMember as ChatMemberModel
+        await ChatMemberModel.filter(chat_id=chat_id, user_id=user_id).update(is_active=False)
+
+    def _to_entity(self, model) -> ChatMember:
+        return ChatMember(
+            id=model.id,
+            chat_id=model.chat_id,
+            user_id=model.user_id,
+            profile_id=model.profile_id,
+            joined_at=model.joined_at,
             is_active=model.is_active,
         )

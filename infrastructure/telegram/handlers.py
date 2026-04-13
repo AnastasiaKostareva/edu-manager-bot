@@ -4,16 +4,26 @@ from datetime import datetime, timedelta
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup
 
 from application.config import get_config
 from application.use_cases.auth import AuthService
 from application.use_cases.lesson import LessonService
 from application.use_cases.reminder import ReminderService
-from domain.entities import LessonStatus, ReminderTime, ReminderType, RepeatType, User, UserRole
+from application.use_cases.chat import ChatService
+from application.use_cases.analytics import AnalyticsService
+from application.use_cases.statistics import StatisticsService
+from domain.entities import LessonStatus, ReminderTime, ReminderType, RepeatType, User, UserRole, Chat
 from domain.exceptions import PermissionDeniedException, ValidationException
-from infrastructure.database.repositories import LessonRepository, ReminderRepository, UserRepository
-from infrastructure.telegram.states import AddLessonSG, AddReminderSG, RemoveLessonSG, RemoveReminderSG, SqlConsoleSG
+from infrastructure.database.repositories import (
+    LessonRepository,
+    ReminderRepository,
+    UserRepository,
+    ChatRepository,
+    ChatMemberRepository,
+)
+from infrastructure.telegram.states import AddLessonSG, AddReminderSG, RemoveLessonSG, RemoveReminderSG, SqlConsoleSG, CompleteLessonSG
+from infrastructure.telegram.keyboards import main_menu_keyboard, quick_actions_keyboard
 
 
 router = Router()
@@ -21,27 +31,54 @@ router = Router()
 user_repo = UserRepository()
 lesson_repo = LessonRepository()
 reminder_repo = ReminderRepository()
+chat_repo = ChatRepository()
+chat_member_repo = ChatMemberRepository()
 
 auth_service = AuthService()
 lesson_service = LessonService(lesson_repo)
 reminder_service = ReminderService(reminder_repo, lesson_repo)
+chat_service = ChatService(chat_repo, chat_member_repo, user_repo)
+analytics_service = AnalyticsService()
+statistics_service = StatisticsService()
 
 
 def get_user_role(telegram_id: int) -> UserRole:
     config = get_config()
-    return UserRole.OWNER if str(telegram_id) in config.admins else UserRole.STUDENT
+    admin_ids = {str(admin_id).strip() for admin_id in config.admins}
+    return UserRole.OWNER if str(telegram_id) in admin_ids else UserRole.STUDENT
 
 
 async def get_or_create_user(message: Message) -> tuple[User, bool]:
     existing = await user_repo.get_by_telegram_id(message.from_user.id)
+    expected_role = get_user_role(message.from_user.id)
+
     if existing:
+        updated = False
+
+        # Автоповышаем пользователя до owner, если его id добавили в appsettings.yaml позже.
+        if expected_role == UserRole.OWNER and existing.role != UserRole.OWNER:
+            existing.role = UserRole.OWNER
+            updated = True
+
+        username = message.from_user.username or ""
+        full_name = message.from_user.full_name
+        if existing.username != username:
+            existing.username = username
+            updated = True
+        if existing.full_name != full_name:
+            existing.full_name = full_name
+            updated = True
+
+        if updated:
+            await user_repo.update(existing)
+
         return existing, True
 
     user = User(
         telegram_id=message.from_user.id,
         username=message.from_user.username or "",
         full_name=message.from_user.full_name,
-        role=get_user_role(message.from_user.id),
+        role=expected_role,
         is_active=True,
     )
     created = await user_repo.create(user)
@@ -56,18 +93,188 @@ async def get_user_or_reply(message: Message) -> User | None:
     return user
 
 
+def _chat_title_and_type(message: Message) -> tuple[str, str]:
+    chat_title = message.chat.title or message.chat.full_name or "Личный чат"
+    chat_type = message.chat.type
+    return chat_title, chat_type
+
+
+async def ensure_chat_exists(message: Message) -> None:
+    existing = await chat_repo.get_by_id(message.chat.id)
+    if existing:
+        return
+
+    chat_title, chat_type = _chat_title_and_type(message)
+    chat = Chat(
+        chat_id=message.chat.id,
+        chat_title=chat_title,
+        chat_type=chat_type,
+        created_at=datetime.utcnow(),
+        is_active=True,
+    )
+    await chat_repo.create(chat)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    user = await user_repo.get_by_telegram_id(message.from_user.id)
-    if not user:
-        await message.answer("Не могу найти тебя в системе.\nОбратись к @admin")
+    user, existed = await get_or_create_user(message)
+
+    if existed:
+        await message.answer(
+            f"Приветствую, {user.username}!\n"
+            f"Твоя роль: {user.role.value}\n"
+            f"Если что-то неверно — обратись к @admin",
+            reply_markup=main_menu_keyboard(user.role),
+        )
+        await message.answer(
+            "Быстрые действия:",
+            reply_markup=quick_actions_keyboard(user.role),
+        )
         return
 
     await message.answer(
-        f"Приветствую, {user.username}!\n"
-        f"Твоя роль: {user.role.value}\n"
-        f"Если что-то неверно — обратись к @admin"
+        f"Добро пожаловать, {user.username}!\n"
+        f"Регистрация завершена. Твоя роль: {user.role.value}\n"
+        f"Если нужно изменить роль — обратись к @admin",
+        reply_markup=main_menu_keyboard(user.role),
     )
+    await message.answer(
+        "Быстрые действия:",
+        reply_markup=quick_actions_keyboard(user.role),
+    )
+
+
+@router.message(F.text == "Мои занятия")
+async def menu_lessons(message: Message, state: FSMContext):
+    await cmd_lessons(message, state)
+
+
+@router.message(F.text == "Добавить занятие")
+async def menu_add_lesson(message: Message, state: FSMContext):
+    await cmd_add_lesson(message, state)
+
+
+@router.message(F.text == "Удалить занятие")
+async def menu_remove_lesson(message: Message, state: FSMContext):
+    await cmd_remove_lesson(message, state)
+
+
+@router.message(F.text == "Добавить напоминание")
+async def menu_add_reminder(message: Message, state: FSMContext):
+    await cmd_add_reminder(message, state)
+
+
+@router.message(F.text == "Удалить напоминание")
+async def menu_remove_reminder(message: Message, state: FSMContext):
+    await cmd_remove_reminder(message, state)
+
+
+@router.message(F.text == "Статистика")
+async def menu_stats(message: Message):
+    await cmd_stats(message)
+
+
+@router.message(F.text == "SQL консоль")
+async def menu_sql(message: Message, state: FSMContext):
+    await cmd_sql(message, state)
+
+
+@router.callback_query(F.data.startswith("ux:"))
+async def ux_callback_router(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":", 1)[1]
+
+    if action == "lessons":
+        await cmd_lessons(callback.message, state)
+    elif action == "add_lesson":
+        await cmd_add_lesson(callback.message, state)
+    elif action == "add_reminder":
+        await cmd_add_reminder(callback.message, state)
+    elif action == "stats":
+        await cmd_stats(callback.message)
+    elif action == "sql":
+        await cmd_sql(callback.message, state)
+    else:
+        await callback.message.answer("Неизвестное действие")
+
+    await callback.answer()
+
+
+@router.message(Command("init"))
+async def cmd_init(message: Message):
+    """
+    Команда /init для инициализации чата преподавателем.
+    Использование: /init @username или /init (если студент уже писал в чат)
+    """
+    # Получаем пользователя-инициатора
+    actor = await user_repo.get_by_telegram_id(message.from_user.id)
+    if not actor:
+        await message.answer("Не могу найти тебя в системе.\nОбратись к @admin")
+        return
+
+    # Проверка прав доступа
+    if actor.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+        await message.answer(
+            "❌ Отказано в доступе.\n"
+            "Только преподаватели и администраторы могут инициализировать чаты."
+        )
+        return
+
+    # Проверяем, не инициализирован ли чат уже
+    is_initialized = await chat_service.is_chat_initialized(message.chat.id)
+    if is_initialized:
+        members = await chat_member_repo.get_members_by_chat(message.chat.id)
+        member_names = []
+        for member in members:
+            user = await user_repo.get_by_telegram_id(member.user_id)
+            if user:
+                member_names.append(f"{user.full_name or user.username} ({user.role.value})")
+
+        await message.answer(
+            f"⚠️ Чат уже инициализирован.\n"
+            f"Участники:\n" + "\n".join(f"• {name}" for name in member_names)
+        )
+        return
+
+    # Парсим аргументы команды
+    command_parts = message.text.split(maxsplit=1)
+    student_username = command_parts[1] if len(command_parts) > 1 else None
+
+    try:
+        chat_title = message.chat.title or message.chat.full_name or "Личный чат"
+        chat_type = message.chat.type
+
+        # Попытка инициализации с username
+        if student_username:
+            chat, teacher_member, student_member = await chat_service.initialize_chat(
+                actor=actor,
+                chat_id=message.chat.id,
+                chat_title=chat_title,
+                chat_type=chat_type,
+                student_username=student_username,
+            )
+
+            student = await user_repo.get_by_telegram_id(student_member.user_id)
+            await message.answer(
+                f"✅ Чат успешно настроен!\n\n"
+                f"👨‍🏫 Преподаватель: {actor.full_name or actor.username}\n"
+                f"👨‍🎓 Студент: {student.full_name or student.username}\n\n"
+                f"Теперь вы можете использовать команды для управления расписанием."
+            )
+        else:
+            await message.answer(
+                "⚠️ Не указан username студента.\n\n"
+                "Используйте: /init @username\n\n"
+                "Если у студента скрыт username:\n"
+                "1. Попросите студента написать любое сообщение в этот чат\n"
+                "2. Повторите команду /init с его telegram_id"
+            )
+
+    except ValidationException as e:
+        await message.answer(f"❌ Ошибка валидации: {str(e)}")
+    except PermissionDeniedException as e:
+        await message.answer(f"❌ Отказано в доступе: {str(e)}")
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка: {str(e)}")
 
 
 @router.message(Command("lessons"))
@@ -123,6 +330,8 @@ async def cmd_add_lesson(message: Message, state: FSMContext):
         await message.answer("У вас нет доступа к этой команде")
         return
 
+    await ensure_chat_exists(message)
+
     await message.answer("Введите ссылку на занятие")
     await state.set_state(AddLessonSG.link)
 
@@ -138,7 +347,7 @@ async def add_lesson_link(message: Message, state: FSMContext):
 async def add_lesson_title(message: Message, state: FSMContext):
     await state.update_data(title=message.text)
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="weekly", callback_data="repeat:weekly")],
@@ -216,7 +425,7 @@ async def cmd_remove_lesson(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -243,7 +452,7 @@ async def delete_lesson(callback: CallbackQuery, state: FSMContext):
 
 @router.message(Command("addReminder"))
 async def cmd_add_reminder(message: Message, state: FSMContext):
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Себе", callback_data="target:self")],
@@ -267,7 +476,7 @@ async def reminder_target(callback: CallbackQuery, state: FSMContext):
             await callback.answer()
             return
 
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        from aiogram.types import InlineKeyboardButton
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=s.username, callback_data=f"student:{s.telegram_id}")]
@@ -286,7 +495,7 @@ async def reminder_target(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -315,7 +524,7 @@ async def reminder_student(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -337,7 +546,7 @@ async def reminder_lesson(callback: CallbackQuery, state: FSMContext):
     lesson_id = int(callback.data.split(":")[1])
     await state.update_data(lesson_id=lesson_id)
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Занятие", callback_data="topic:lesson")],
@@ -403,7 +612,7 @@ async def reminder_time(message: Message, state: FSMContext):
 
 @router.message(Command("removeReminder"))
 async def cmd_remove_reminder(message: Message, state: FSMContext):
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Себе", callback_data="target:self")],
@@ -426,7 +635,7 @@ async def remove_reminder_target(callback: CallbackQuery, state: FSMContext):
             await callback.answer()
             return
 
-        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        from aiogram.types import InlineKeyboardButton
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text=s.username, callback_data=f"student:{s.telegram_id}")]
@@ -466,7 +675,7 @@ async def remove_reminder_student(callback: CallbackQuery, state: FSMContext):
 
 
 def _reminders_keyboard(reminders: list) -> "InlineKeyboardMarkup":
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -490,31 +699,250 @@ async def delete_reminder(callback: CallbackQuery, state: FSMContext):
     await state.clear()
 
 
-@router.message(Command("sql"))
-async def cmd_sql(message: Message, state: FSMContext):
-    user, _ = await get_or_create_user(message)
-    if user.role != UserRole.OWNER:
-        await message.answer("У вас нет доступа к этой команде")
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """
+    Команда для просмотра статистики.
+    Доступна преподавателям, администраторам и владельцу.
+    """
+    user = await get_user_or_reply(message)
+    if not user:
         return
 
-    await message.answer("Введите SQL запрос")
+    try:
+        # Проверяем права доступа
+        if user.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+            await message.answer(
+                "🔒 У вас нет доступа к этой команде\n"
+                "Статистика доступна преподавателям и администраторам"
+            )
+            return
+
+        # Отправляем индикатор "печатает"
+        await message.bot.send_chat_action(message.chat.id, "typing")
+
+        # Получаем статистику за 30 дней
+        period_stats = await statistics_service.get_period_statistics(
+            actor=user,
+            period_days=30
+        )
+
+        # Форматируем и отправляем
+        stats_text = statistics_service.format_period_statistics(period_stats)
+        await message.answer(stats_text)
+
+        # Если это преподаватель, показываем его личную статистику
+        if user.role == UserRole.TEACHER:
+            teacher_stats = await statistics_service.get_teacher_statistics(
+                actor=user,
+                period_days=30
+            )
+            teacher_text = statistics_service.format_teacher_statistics(
+                teacher_stats,
+                period_days=30
+            )
+            await message.answer(f"\n{teacher_text}")
+
+    except PermissionDeniedException as e:
+        await message.answer(f"🔒 {str(e)}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при получении статистики: {str(e)}")
+
+
+@router.message(Command("sql"))
+async def cmd_sql(message: Message, state: FSMContext):
+    """
+    Команда для выполнения SQL-запросов.
+    Доступна только владельцу для получения аналитики.
+    """
+    user, _ = await get_or_create_user(message)
+    if user.role != UserRole.OWNER:
+        await message.answer(
+            "🔒 У вас нет доступа к этой команде\n"
+            "Только владелец может выполнять SQL-запросы"
+        )
+        return
+
+    help_text = (
+        "📊 SQL-консоль для аналитики\n\n"
+        "Отправьте SELECT-запрос для получения данных.\n\n"
+        "⚡️ Особенности:\n"
+        "• Разрешены только SELECT-запросы\n"
+        "• Таймаут: 10 секунд\n"
+        "• Результаты > 15 строк → CSV-файл\n"
+        "• Режим Read-Only\n\n"
+        "📝 Пример:\n"
+        "<code>SELECT * FROM users LIMIT 10</code>\n\n"
+        "Введите запрос:"
+    )
+    await message.answer(help_text, parse_mode="HTML")
     await state.set_state(SqlConsoleSG.query)
 
 
 @router.message(SqlConsoleSG.query)
 async def sql_query(message: Message, state: FSMContext):
-    from tortoise import connections
+    """
+    Обработчик SQL-запроса с экспортом в CSV для больших результатов.
+    """
+    user, _ = await get_or_create_user(message)
+
+    # Отправляем индикатор "печатает", т.к. запрос может выполняться долго
+    await message.bot.send_chat_action(message.chat.id, "typing")
 
     try:
-        conn = connections.get("default")
-        result = await conn.execute_query_dict(message.text)
+        # Выполняем запрос через защищенный сервис
+        result = await analytics_service.execute_query(
+            actor=user,
+            query=message.text
+        )
 
-        if result:
-            text = "\n".join(str(row) for row in result[:10])
-            await message.answer(f"Результат:\n{text}")
+        # Проверяем, нужно ли экспортировать в CSV
+        if analytics_service.should_export_to_csv(result):
+            # Отправляем краткую статистику + CSV-файл
+            summary = analytics_service.format_result_as_text(result, max_rows=5)
+
+            from aiogram.types import BufferedInputFile
+            csv_file = analytics_service.export_to_csv(result)
+            input_file = BufferedInputFile(
+                csv_file.read(),
+                filename=csv_file.name
+            )
+
+            await message.answer(summary)
+            await message.answer_document(
+                input_file,
+                caption=f"📎 Полный результат ({result.row_count} строк)"
+            )
         else:
-            await message.answer("Запрос выполнен")
+            # Отправляем результат текстом
+            text_result = analytics_service.format_result_as_text(result)
+            await message.answer(text_result)
+
+    except PermissionDeniedException as e:
+        await message.answer(f"🔒 {str(e)}")
+
+    except ValidationException as e:
+        await message.answer(f"❌ {str(e)}")
+
     except Exception as e:
-        await message.answer(f"Ошибка: {str(e)}")
+        await message.answer(
+            f"❌ Непредвиденная ошибка:\n{str(e)}\n\n"
+            f"Проверьте синтаксис запроса и повторите попытку."
+        )
+
+    finally:
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("complete_lesson:"))
+async def complete_lesson_callback(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик нажатия кнопок завершения занятия.
+    Формат: complete_lesson:<lesson_id>:<duration|custom>
+    """
+    try:
+        parts = callback.data.split(":")
+        lesson_id = int(parts[1])
+        duration_value = parts[2]
+
+        user = await user_repo.get_by_telegram_id(callback.from_user.id)
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
+
+        if duration_value == "custom":
+            # Переход в режим ввода кастомной длительности
+            await state.update_data(lesson_id=lesson_id)
+            await state.set_state(CompleteLessonSG.custom_duration)
+            await callback.message.edit_text(
+                f"{callback.message.text}\n\n"
+                "✏️ Введите длительность в минутах (например: 75):"
+            )
+            await callback.answer()
+            return
+
+        # Обработка стандартной длительности
+        duration_minutes = int(duration_value)
+
+        try:
+            lesson = await lesson_service.complete_lesson(
+                lesson_id=lesson_id,
+                actor=user,
+                duration_minutes=duration_minutes,
+            )
+
+            await callback.message.edit_text(
+                f"✅ Занятие завершено!\n\n"
+                f"📚 Тема: {lesson.topic}\n"
+                f"⏱ Длительность: {duration_minutes} мин\n"
+                f"🕐 Запланировано: {lesson.scheduled_at.strftime('%d.%m %H:%M')}\n"
+                f"✔️ Статус: Завершено"
+            )
+            await callback.answer("Занятие успешно завершено!", show_alert=True)
+
+        except (ValidationException, PermissionDeniedException) as e:
+            await callback.answer(f"Ошибка: {str(e)}", show_alert=True)
+
+    except Exception as e:
+        await callback.answer(f"Произошла ошибка: {str(e)}", show_alert=True)
+
+
+@router.message(CompleteLessonSG.custom_duration)
+async def complete_lesson_custom_duration(message: Message, state: FSMContext):
+    """
+    Обработчик ввода кастомной длительности занятия.
+    """
+    try:
+        data = await state.get_data()
+        lesson_id = data.get("lesson_id")
+
+        if not lesson_id:
+            await message.answer("Ошибка: занятие не найдено")
+            await state.clear()
+            return
+
+        # Парсим введенное значение
+        try:
+            duration_minutes = int(message.text.strip())
+        except ValueError:
+            await message.answer(
+                "❌ Неверный формат.\n"
+                "Пожалуйста, введите число (количество минут), например: 75"
+            )
+            return
+
+        if duration_minutes <= 0 or duration_minutes > 300:
+            await message.answer(
+                "❌ Длительность должна быть от 1 до 300 минут.\n"
+                "Пожалуйста, введите корректное значение:"
+            )
+            return
+
+        user = await user_repo.get_by_telegram_id(message.from_user.id)
+        if not user:
+            await message.answer("Пользователь не найден")
+            await state.clear()
+            return
+
+        try:
+            lesson = await lesson_service.complete_lesson(
+                lesson_id=lesson_id,
+                actor=user,
+                duration_minutes=duration_minutes,
+            )
+
+            await message.answer(
+                f"✅ Занятие завершено!\n\n"
+                f"📚 Тема: {lesson.topic}\n"
+                f"⏱ Длительность: {duration_minutes} мин\n"
+                f"🕐 Запланировано: {lesson.scheduled_at.strftime('%d.%m %H:%M')}\n"
+                f"✔️ Статус: Завершено"
+            )
+
+        except (ValidationException, PermissionDeniedException) as e:
+            await message.answer(f"❌ Ошибка: {str(e)}")
+
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка: {str(e)}")
     finally:
         await state.clear()
