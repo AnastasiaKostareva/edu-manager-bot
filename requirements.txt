@@ -1,6 +1,6 @@
-aiogram>=3.17.0
-tortoise-orm>=0.23.0
-asyncpg>=0.30.0
-pyyaml>=6.0.2
-python-dotenv>=1.0.1
-aerich>=0.7.2
+aiogram==3.27.0
+pip==25.0.1
+pytest==9.0.3
+python-dotenv==1.2.2
+PyYAML==6.0.3
+tortoise==0.1.1
