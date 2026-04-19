@@ -127,4 +127,4 @@ class ChatService:
             return False
         #members = await self.chat_member_repo.get_members_by_chat(chat_id)
         #return len(members) > 0
-        return True
+        return true
