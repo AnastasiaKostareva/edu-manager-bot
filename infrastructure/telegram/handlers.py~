@@ -185,7 +185,7 @@ async def _handle_private_start(message: Message, state: FSMContext):
             reply_markup=main_menu_keyboard(user.role)
         )
         await message.answer("Быстрые действия:",
-                             reply_markup=quick_actions_keyboard(user.role, is_group=False))
+                             reply_markup=quick_actions_keyboard(user.role))
         return
 
     user = await user_repo.get_by_telegram_id(message.from_user.id)
@@ -197,7 +197,7 @@ async def _handle_private_start(message: Message, state: FSMContext):
             reply_markup=main_menu_keyboard(user.role)
         )
         await message.answer("Быстрые действия:",
-                             reply_markup=quick_actions_keyboard(user.role, is_group=False))
+                             reply_markup=quick_actions_keyboard(user.role))
     else:
         await message.answer(
             f"Не могу найти тебя в системе.\n"
