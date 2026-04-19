@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 logger = logging.getLogger(__name__)
 
+import calendar
+from datetime import datetime, timedelta
+
 import re
 from datetime import datetime, timedelta
 from aiogram import Router, F
@@ -301,7 +304,7 @@ async def _finish_group_registration(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ Регистрация успешно прошла, готов к работе!",
-        reply_markup=main_menu_keyboard(role)
+        reply_markup=main_menu_keyboard(role, is_group=True)
     )
     await message.answer(
         "Быстрые действия:",
@@ -473,78 +476,6 @@ async def ux_callback_router(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(Command("init"))
-async def cmd_init(message: Message):
-    actor = await user_repo.get_by_telegram_id(message.from_user.id)
-    if not actor:
-        await message.answer(
-            "Не могу найти тебя в системе.\nОбратись к @admin")
-        return
-
-    if actor.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
-        await message.answer(
-            "❌ Отказано в доступе.\n"
-            "Только преподаватели и администраторы могут инициализировать чаты."
-        )
-        return
-
-    is_initialized = await chat_service.is_chat_initialized(message.chat.id)
-    if is_initialized:
-        members = await chat_member_repo.get_members_by_chat(message.chat.id)
-        member_names = []
-        for member in members:
-            user = await user_repo.get_by_telegram_id(member.user_id)
-            if user:
-                member_names.append(
-                    f"{user.full_name or user.username} ({user.role.value})")
-
-        await message.answer(
-            f"⚠️ Чат уже инициализирован.\n"
-            f"Участники:\n" + "\n".join(f"• {name}" for name in member_names)
-        )
-        return
-
-    command_parts = message.text.split(maxsplit=1)
-    student_username = command_parts[1] if len(command_parts) > 1 else None
-
-    try:
-        chat_title = message.chat.title or message.chat.full_name or "Личный чат"
-        chat_type = message.chat.type
-
-        if student_username:
-            chat, teacher_member, student_member = await chat_service.initialize_chat(
-                actor=actor,
-                chat_id=message.chat.id,
-                chat_title=chat_title,
-                chat_type=chat_type,
-                student_username=student_username,
-            )
-
-            student = await user_repo.get_by_telegram_id(
-                student_member.user_id)
-            await message.answer(
-                f"✅ Чат успешно настроен!\n\n"
-                f"👨‍🏫 Преподаватель: {actor.full_name or actor.username}\n"
-                f"👨‍🎓 Студент: {student.full_name or student.username}\n\n"
-                f"Теперь вы можете использовать команды для управления расписанием."
-            )
-        else:
-            await message.answer(
-                "⚠️ Не указан username студента.\n\n"
-                "Используйте: /init @username\n\n"
-                "Если у студента скрыт username:\n"
-                "1. Попросите студента написать любое сообщение в этот чат\n"
-                "2. Повторите команду /init с его telegram_id"
-            )
-
-    except ValidationException as e:
-        await message.answer(f"❌ Ошибка валидации: {str(e)}")
-    except PermissionDeniedException as e:
-        await message.answer(f"❌ Отказано в доступе: {str(e)}")
-    except Exception as e:
-        await message.answer(f"❌ Произошла ошибка: {str(e)}")
-
-
 @router.message(Command("lessons"))
 async def cmd_lessons(message: Message, state: FSMContext):
     user = await get_user_or_reply(message)
@@ -590,104 +521,183 @@ async def admin_find_user(message: Message, state: FSMContext):
     await state.clear()
 
 
+# ==========================================
+# ДОБАВЛЕНИЕ ЗАНЯТИЯ (НОВЫЙ ПОРЯДОК)
+# ==========================================
+
 @router.message(Command("addLesson"))
+@router.message(F.text == "Добавить занятие")
 async def cmd_add_lesson(message: Message, state: FSMContext):
     user = await get_user_or_reply(message)
     if not user:
         return
     try:
-        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN,
-                                        UserRole.OWNER])
+        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER])
     except PermissionDeniedException:
         await message.answer("У вас нет доступа к этой команде")
         return
 
     await ensure_chat_exists(message)
 
-    await message.answer("Введите ссылку на занятие")
-    await state.set_state(AddLessonSG.link)
-
-
-@router.message(AddLessonSG.link)
-async def add_lesson_link(message: Message, state: FSMContext):
-    await state.update_data(link=message.text)
     await message.answer("Введите тему занятия")
-    await state.set_state(AddLessonSG.title)
+    await state.set_state(AddLessonSG.topic)
 
 
-@router.message(AddLessonSG.title)
-async def add_lesson_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text)
+@router.message(AddLessonSG.topic)
+async def add_lesson_topic(message: Message, state: FSMContext):
+    topic = message.text.strip()
+    if not topic:
+        await message.answer("Тема не может быть пустой. Попробуйте ещё раз.")
+        return
 
+    await state.update_data(topic=topic)
+
+    # Формируем клавиатуру с днями недели
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="weekly",
-                                  callback_data="repeat:weekly")],
-            [InlineKeyboardButton(text="every_2_weeks",
-                                  callback_data="repeat:every_2_weeks")],
-            [InlineKeyboardButton(text="monthly",
-                                  callback_data="repeat:monthly")],
-            [InlineKeyboardButton(text="one_time",
-                                  callback_data="repeat:one_time")],
+            [InlineKeyboardButton(text=day, callback_data=f"weekday:{i}")]
+            for i, day in enumerate(days)
         ]
     )
-    await message.answer("Выберите тип повторения", reply_markup=kb)
-    await state.set_state(AddLessonSG.repeat_type)
+
+    await message.answer(
+        "Выберите день, когда хотите провести занятие, или введите дату, "
+        "если занятие не в ближайшую неделю (формат дд:мм):",
+        reply_markup=kb
+    )
+    await state.set_state(AddLessonSG.day_selection)
 
 
-@router.callback_query(F.data.startswith("repeat:"), AddLessonSG.repeat_type)
-async def add_lesson_repeat_type(callback: CallbackQuery, state: FSMContext):
-    repeat_value = callback.data.split(":", 1)[1]
-    await state.update_data(repeat_type=repeat_value)
-    await callback.message.answer("Введите дату (dd:mm)")
-    await state.set_state(AddLessonSG.date)
+@router.callback_query(F.data.startswith("weekday:"), AddLessonSG.day_selection)
+async def add_lesson_weekday_selected(callback: CallbackQuery, state: FSMContext):
+    weekday_index = int(callback.data.split(":")[1])  # 0 = Пн, 6 = Вс
+    # Преобразуем в Python weekday (0 = Пн, 6 = Вс)
+    today = datetime.now().date()
+    # Находим ближайшую дату с нужным днём недели (включая сегодня)
+    days_ahead = (weekday_index - today.weekday()) % 7
+    target_date = today + timedelta(days=days_ahead if days_ahead > 0 else 7)
+
+    await state.update_data(target_date=target_date)
+    await callback.message.edit_text(
+        f"Выбран день: {target_date.strftime('%d.%m.%Y')} ({['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][weekday_index]})\n"
+        f"Теперь введите время занятия (чч:мм):"
+    )
+    await state.set_state(AddLessonSG.time)
     await callback.answer()
 
 
-@router.message(AddLessonSG.date)
-async def add_lesson_date(message: Message, state: FSMContext):
-    await state.update_data(date=message.text)
-    await message.answer("Введите время (hh:mm)")
+@router.message(AddLessonSG.day_selection)
+async def add_lesson_custom_date(message: Message, state: FSMContext):
+    """Обработка ручного ввода даты в формате дд:мм"""
+    text = message.text.strip()
+    try:
+        day, month = map(int, text.split(":"))
+        now = datetime.now()
+        # Предполагаем текущий год, если дата уже прошла — следующий год
+        target_date = datetime(now.year, month, day).date()
+        if target_date < now.date():
+            target_date = datetime(now.year + 1, month, day).date()
+    except (ValueError, TypeError):
+        await message.answer("❌ Неверный формат. Введите дату как дд:мм (например, 15:04).")
+        return
+
+    await state.update_data(target_date=target_date)
+    await message.answer(
+        f"Выбрана дата: {target_date.strftime('%d.%m.%Y')}\n"
+        f"Теперь введите время занятия (чч:мм):"
+    )
     await state.set_state(AddLessonSG.time)
 
 
 @router.message(AddLessonSG.time)
 async def add_lesson_time(message: Message, state: FSMContext):
-    data = await state.get_data()
+    text = message.text.strip()
     try:
-        date_parts = (data.get("date") or "").split(":")
-        time_parts = (message.text or "").split(":")
-        if len(date_parts) != 2 or len(time_parts) != 2:
-            raise ValidationException("Неверный формат даты/времени")
+        hour, minute = map(int, text.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (ValueError, TypeError):
+        await message.answer("❌ Неверный формат времени. Введите как чч:мм (например, 16:30).")
+        return
 
-        day = int(date_parts[0])
-        month = int(date_parts[1])
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
+    data = await state.get_data()
+    target_date = data["target_date"]
+    scheduled_at = datetime.combine(target_date, datetime.min.time().replace(hour=hour, minute=minute))
 
-        now = datetime.now()
-        scheduled_at = datetime(now.year, month, day, hour, minute)
-        if scheduled_at <= now:
-            scheduled_at = scheduled_at.replace(year=now.year + 1)
+    # Проверяем, что время ещё не прошло (если дата сегодня)
+    if scheduled_at <= datetime.now():
+        await message.answer("⚠️ Указанное время уже прошло. Пожалуйста, выберите будущее время.")
+        return
 
-        actor = await get_user_or_reply(message)
-        if not actor:
-            return
+    await state.update_data(scheduled_at=scheduled_at)
 
-        repeat_type = None
-        if data.get("repeat_type"):
-            repeat_type = RepeatType(data["repeat_type"])
+    topic = data["topic"]
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Верно", callback_data="confirm_lesson:yes")],
+        [InlineKeyboardButton(text="🔄 Неверно", callback_data="confirm_lesson:no")],
+    ])
+
+    await message.answer(
+        f"Проверьте данные:\n\n"
+        f"📚 Тема: {topic}\n"
+        f"📅 Дата и время: {scheduled_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"Всё верно?",
+        reply_markup=confirm_kb
+    )
+    await state.set_state(AddLessonSG.confirmation)
+
+
+@router.callback_query(F.data.startswith("confirm_lesson:"), AddLessonSG.confirmation)
+async def add_lesson_confirmation(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":")[1]
+
+    if action == "no":
+        await state.clear()
+        await callback.message.edit_text("❌ Добавление занятия отменено. Начните заново с /addLesson")
+        await callback.answer()
+        return
+
+    # Действие "yes"
+    await callback.message.edit_text(
+        "✅ Данные подтверждены. Теперь введите ссылку на занятие (Zoom, Google Meet и т.п.):"
+    )
+    await state.set_state(AddLessonSG.link)
+    await callback.answer()
+
+
+@router.message(AddLessonSG.link)
+async def add_lesson_link(message: Message, state: FSMContext):
+    link = message.text.strip()
+    if not link:
+        await message.answer("Ссылка не может быть пустой. Попробуйте ещё раз.")
+        return
+
+    data = await state.get_data()
+    topic = data["topic"]
+    scheduled_at = data["scheduled_at"]
+    actor = await get_user_or_reply(message)
+    if not actor:
+        return
+
+    try:
+        # Создаём занятие (без repeat_type, можно добавить опционально)
         await lesson_service.schedule(
             actor=actor,
             chat_id=message.chat.id,
             scheduled_at=scheduled_at,
-            topic=data.get("title") or "",
-            lesson_link=data.get("link"),
-            repeat_type=repeat_type,
+            topic=topic,
+            lesson_link=link,
+            repeat_type=None,  # или добавить позже
         )
-        await message.answer("Занятие назначено")
+        await message.answer(
+            f"✅ Занятие назначено!\n\n"
+            f"📚 Тема: {topic}\n"
+            f"📅 Дата и время: {scheduled_at.strftime('%d.%m.%Y %H:%M')}\n"
+            f"🔗 Ссылка: {link}"
+        )
     except Exception as e:
-        await message.answer(f"Ошибка: {str(e)}")
+        await message.answer(f"❌ Ошибка при создании занятия: {str(e)}")
     finally:
         await state.clear()
 
@@ -1193,3 +1203,18 @@ async def complete_lesson_custom_duration(message: Message, state: FSMContext):
         await message.answer(f"❌ Произошла ошибка: {str(e)}")
     finally:
         await state.clear()
+
+# ==========================================
+# КОМАНДЫ /commands и /help
+# ==========================================
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Показывает справку по доступным командам."""
+    help_text = (
+        "📋 Доступные команды:\n\n"
+        "/start — начать работу с ботом, после выполнения будут доступны другие действия\n"
+        "/help — эта справка\n\n"
+        "Если у вас есть вопросы, обратитесь к администратору."
+    )
+    await message.answer(help_text)

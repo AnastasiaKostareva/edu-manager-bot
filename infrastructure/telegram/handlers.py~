@@ -185,7 +185,7 @@ async def _handle_private_start(message: Message, state: FSMContext):
             reply_markup=main_menu_keyboard(user.role)
         )
         await message.answer("Быстрые действия:",
-                             reply_markup=quick_actions_keyboard(user.role))
+                             reply_markup=quick_actions_keyboard(user.role, is_group=False))
         return
 
     user = await user_repo.get_by_telegram_id(message.from_user.id)
@@ -197,7 +197,7 @@ async def _handle_private_start(message: Message, state: FSMContext):
             reply_markup=main_menu_keyboard(user.role)
         )
         await message.answer("Быстрые действия:",
-                             reply_markup=quick_actions_keyboard(user.role))
+                             reply_markup=quick_actions_keyboard(user.role, is_group=False))
     else:
         await message.answer(
             f"Не могу найти тебя в системе.\n"
@@ -301,7 +301,7 @@ async def _finish_group_registration(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ Регистрация успешно прошла, готов к работе!",
-        reply_markup=main_menu_keyboard(role)
+        reply_markup=main_menu_keyboard(role, is_group=True)
     )
     await message.answer(
         "Быстрые действия:",
@@ -473,78 +473,6 @@ async def ux_callback_router(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(Command("init"))
-async def cmd_init(message: Message):
-    actor = await user_repo.get_by_telegram_id(message.from_user.id)
-    if not actor:
-        await message.answer(
-            "Не могу найти тебя в системе.\nОбратись к @admin")
-        return
-
-    if actor.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
-        await message.answer(
-            "❌ Отказано в доступе.\n"
-            "Только преподаватели и администраторы могут инициализировать чаты."
-        )
-        return
-
-    is_initialized = await chat_service.is_chat_initialized(message.chat.id)
-    if is_initialized:
-        members = await chat_member_repo.get_members_by_chat(message.chat.id)
-        member_names = []
-        for member in members:
-            user = await user_repo.get_by_telegram_id(member.user_id)
-            if user:
-                member_names.append(
-                    f"{user.full_name or user.username} ({user.role.value})")
-
-        await message.answer(
-            f"⚠️ Чат уже инициализирован.\n"
-            f"Участники:\n" + "\n".join(f"• {name}" for name in member_names)
-        )
-        return
-
-    command_parts = message.text.split(maxsplit=1)
-    student_username = command_parts[1] if len(command_parts) > 1 else None
-
-    try:
-        chat_title = message.chat.title or message.chat.full_name or "Личный чат"
-        chat_type = message.chat.type
-
-        if student_username:
-            chat, teacher_member, student_member = await chat_service.initialize_chat(
-                actor=actor,
-                chat_id=message.chat.id,
-                chat_title=chat_title,
-                chat_type=chat_type,
-                student_username=student_username,
-            )
-
-            student = await user_repo.get_by_telegram_id(
-                student_member.user_id)
-            await message.answer(
-                f"✅ Чат успешно настроен!\n\n"
-                f"👨‍🏫 Преподаватель: {actor.full_name or actor.username}\n"
-                f"👨‍🎓 Студент: {student.full_name or student.username}\n\n"
-                f"Теперь вы можете использовать команды для управления расписанием."
-            )
-        else:
-            await message.answer(
-                "⚠️ Не указан username студента.\n\n"
-                "Используйте: /init @username\n\n"
-                "Если у студента скрыт username:\n"
-                "1. Попросите студента написать любое сообщение в этот чат\n"
-                "2. Повторите команду /init с его telegram_id"
-            )
-
-    except ValidationException as e:
-        await message.answer(f"❌ Ошибка валидации: {str(e)}")
-    except PermissionDeniedException as e:
-        await message.answer(f"❌ Отказано в доступе: {str(e)}")
-    except Exception as e:
-        await message.answer(f"❌ Произошла ошибка: {str(e)}")
-
-
 @router.message(Command("lessons"))
 async def cmd_lessons(message: Message, state: FSMContext):
     user = await get_user_or_reply(message)
@@ -590,106 +518,7 @@ async def admin_find_user(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.message(Command("addLesson"))
-async def cmd_add_lesson(message: Message, state: FSMContext):
-    user = await get_user_or_reply(message)
-    if not user:
-        return
-    try:
-        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN,
-                                        UserRole.OWNER])
-    except PermissionDeniedException:
-        await message.answer("У вас нет доступа к этой команде")
-        return
 
-    await ensure_chat_exists(message)
-
-    await message.answer("Введите ссылку на занятие")
-    await state.set_state(AddLessonSG.link)
-
-
-@router.message(AddLessonSG.link)
-async def add_lesson_link(message: Message, state: FSMContext):
-    await state.update_data(link=message.text)
-    await message.answer("Введите тему занятия")
-    await state.set_state(AddLessonSG.title)
-
-
-@router.message(AddLessonSG.title)
-async def add_lesson_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text)
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="weekly",
-                                  callback_data="repeat:weekly")],
-            [InlineKeyboardButton(text="every_2_weeks",
-                                  callback_data="repeat:every_2_weeks")],
-            [InlineKeyboardButton(text="monthly",
-                                  callback_data="repeat:monthly")],
-            [InlineKeyboardButton(text="one_time",
-                                  callback_data="repeat:one_time")],
-        ]
-    )
-    await message.answer("Выберите тип повторения", reply_markup=kb)
-    await state.set_state(AddLessonSG.repeat_type)
-
-
-@router.callback_query(F.data.startswith("repeat:"), AddLessonSG.repeat_type)
-async def add_lesson_repeat_type(callback: CallbackQuery, state: FSMContext):
-    repeat_value = callback.data.split(":", 1)[1]
-    await state.update_data(repeat_type=repeat_value)
-    await callback.message.answer("Введите дату (dd:mm)")
-    await state.set_state(AddLessonSG.date)
-    await callback.answer()
-
-
-@router.message(AddLessonSG.date)
-async def add_lesson_date(message: Message, state: FSMContext):
-    await state.update_data(date=message.text)
-    await message.answer("Введите время (hh:mm)")
-    await state.set_state(AddLessonSG.time)
-
-
-@router.message(AddLessonSG.time)
-async def add_lesson_time(message: Message, state: FSMContext):
-    data = await state.get_data()
-    try:
-        date_parts = (data.get("date") or "").split(":")
-        time_parts = (message.text or "").split(":")
-        if len(date_parts) != 2 or len(time_parts) != 2:
-            raise ValidationException("Неверный формат даты/времени")
-
-        day = int(date_parts[0])
-        month = int(date_parts[1])
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        now = datetime.now()
-        scheduled_at = datetime(now.year, month, day, hour, minute)
-        if scheduled_at <= now:
-            scheduled_at = scheduled_at.replace(year=now.year + 1)
-
-        actor = await get_user_or_reply(message)
-        if not actor:
-            return
-
-        repeat_type = None
-        if data.get("repeat_type"):
-            repeat_type = RepeatType(data["repeat_type"])
-        await lesson_service.schedule(
-            actor=actor,
-            chat_id=message.chat.id,
-            scheduled_at=scheduled_at,
-            topic=data.get("title") or "",
-            lesson_link=data.get("link"),
-            repeat_type=repeat_type,
-        )
-        await message.answer("Занятие назначено")
-    except Exception as e:
-        await message.answer(f"Ошибка: {str(e)}")
-    finally:
-        await state.clear()
 
 
 @router.message(Command("removeLesson"))
@@ -1193,3 +1022,18 @@ async def complete_lesson_custom_duration(message: Message, state: FSMContext):
         await message.answer(f"❌ Произошла ошибка: {str(e)}")
     finally:
         await state.clear()
+
+# ==========================================
+# КОМАНДЫ /commands и /help
+# ==========================================
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Показывает справку по доступным командам."""
+    help_text = (
+        "📋 Доступные команды:\n\n"
+        "/start — начать работу с ботом, после выполнения будут доступны другие действия\n"
+        "/help — эта справка\n\n"
+        "Если у вас есть вопросы, обратитесь к администратору."
+    )
+    await message.answer(help_text)
