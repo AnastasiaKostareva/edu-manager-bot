@@ -52,6 +52,8 @@ chat_service = ChatService(chat_repo, chat_member_repo, user_repo)
 analytics_service = AnalyticsService()
 statistics_service = StatisticsService()
 
+USERNAME_PATTERN = re.compile(r'^@([a-zA-Z0-9_]{5,32})$')
+
 # ==========================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================

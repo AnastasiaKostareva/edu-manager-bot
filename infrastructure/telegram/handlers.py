@@ -413,45 +413,84 @@ async def ux_callback_router(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(Command("lessons"))
+@router.message(F.text == "Мои занятия")
 async def cmd_lessons(message: Message, state: FSMContext):
+    """Показывает занятия: в группе – занятия чата, в личке – свои (кроме админов)."""
+
+    # === ГРУППОВОЙ ЧАТ ===
+    if message.chat.type != "private":
+        # Проверяем, инициализирован ли чат
+        is_initialized = await chat_service.is_chat_initialized(
+            message.chat.id)
+        if not is_initialized:
+            await message.answer(
+                "⚠️ Чат ещё не настроен. Выполните /start для регистрации участников."
+            )
+            return
+
+        # Получаем занятия, назначенные в этом чате
+        lessons = await lesson_service.list_for_chat(message.chat.id)
+        if not lessons:
+            await message.answer("В этом чате пока нет назначенных занятий.")
+            return
+
+        # Формируем список занятий
+        text = "📚 Занятия в этом чате:\n\n" + "\n".join(
+            f"{i + 1}. {l.topic} — {l.scheduled_at.strftime('%d.%m %H:%M')}"
+            for i, l in enumerate(lessons)
+        )
+        await message.answer(text)
+        return
+
+    # === ЛИЧНЫЕ СООБЩЕНИЯ ===
     user = await get_user_or_reply(message)
     if not user:
         return
 
+    # Администраторы и владельцы могут смотреть занятия других пользователей
     if user.role in (UserRole.ADMIN, UserRole.OWNER):
-        await message.answer("Введите тег пользователя")
+        await message.answer(
+            "Введите @username пользователя, чьи занятия хотите посмотреть:")
         await state.set_state("admin_find_user")
         return
 
+    # Для обычных пользователей показываем их собственные занятия
     lessons = await lesson_service.list_for_user(user.telegram_id)
     if not lessons:
         await message.answer(
-            "Сейчас нет назначенных занятий\nИспользуй /addLesson")
+            "Сейчас нет назначенных занятий.\nИспользуйте /addLesson (если вы преподаватель) "
+            "или дождитесь назначения от преподавателя."
+        )
         return
 
-    text = "Ваши занятия:\n" + "\n".join(
-        f"{i + 1}) {l.topic} — {l.scheduled_at.strftime('%d:%m %H:%M')}" for
-        i, l in enumerate(lessons)
+    text = "📚 Ваши занятия:\n\n" + "\n".join(
+        f"{i + 1}. {l.topic} — {l.scheduled_at.strftime('%d.%m %H:%M')}"
+        for i, l in enumerate(lessons)
     )
     await message.answer(text)
 
 
 @router.message(StateFilter("admin_find_user"))
 async def admin_find_user(message: Message, state: FSMContext):
-    user = await user_repo.get_by_username(message.text.lstrip("@"))
+    """Обработка запроса админа на просмотр занятий конкретного пользователя."""
+    username = message.text.strip().lstrip("@")
+    user = await user_repo.get_by_username(username)
+
     if not user:
-        await message.answer("Пользователь не найден")
+        await message.answer(
+            "❌ Пользователь не найден. Проверьте правильность @username.")
+        await state.clear()
         return
 
     lessons = await lesson_service.list_for_user(user.telegram_id)
     if not lessons:
-        await message.answer("Нет занятий")
+        await message.answer(f"У пользователя @{user.username} нет занятий.")
         await state.clear()
         return
 
-    text = f"Занятия пользователя {user.username}:\n" + "\n".join(
-        f"{i + 1}) {l.topic} — {l.scheduled_at.strftime('%d:%m %H:%M')}" for
-        i, l in enumerate(lessons)
+    text = f"📚 Занятия пользователя @{user.username}:\n\n" + "\n".join(
+        f"{i + 1}. {l.topic} — {l.scheduled_at.strftime('%d.%m %H:%M')}"
+        for i, l in enumerate(lessons)
     )
     await message.answer(text)
     await state.clear()

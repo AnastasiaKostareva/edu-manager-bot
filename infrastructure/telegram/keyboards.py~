@@ -34,13 +34,21 @@ def quick_actions_keyboard(role: UserRole,
     """Быстрые действия (Inline-кнопки). В групповом чате убираем кнопки напоминаний."""
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Мои занятия", callback_data="ux:lessons")],
+        [InlineKeyboardButton(text="Добавить занятие",
+                              callback_data="ux:add_lesson")],
     ]
 
     if not is_group:
         rows.append([InlineKeyboardButton(text="Добавить напоминание",
                                           callback_data="ux:add_reminder")])
+        rows.append([InlineKeyboardButton(text="Удалить напоминание",
+                                          callback_data="ux:remove_reminder")])
 
     rows.append(
         [InlineKeyboardButton(text="Статистика", callback_data="ux:stats")])
+
+    if role == UserRole.OWNER:
+        rows.append(
+            [InlineKeyboardButton(text="SQL консоль", callback_data="ux:sql")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
