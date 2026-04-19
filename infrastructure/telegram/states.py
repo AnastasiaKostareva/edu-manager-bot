@@ -1,6 +1,12 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
+class GroupRegSG(StatesGroup):
+    waiting_for_username = State()   # Ожидание ввода @username или /done
+    role_selection = State()         # Выбор роли для текущего пользователя
+    name_input = State()             # Ввод имени
+    confirmation = State()
+
 class AddLessonSG(StatesGroup):
     topic = State()           # Тема занятия
     day_selection = State()   # Выбор дня (кнопки) или ввод даты вручную

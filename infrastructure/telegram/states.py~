@@ -2,11 +2,11 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AddLessonSG(StatesGroup):
+    topic = State()           # Тема занятия
+    day_selection = State()   # Выбор дня (кнопки) или ввод даты вручную
+    time = State()            # Время занятия
+    confirmation = State()    # Подтверждение данных
     link = State()
-    title = State()
-    repeat_type = State()
-    date = State()
-    time = State()
 
 
 class RemoveLessonSG(StatesGroup):

@@ -33,7 +33,7 @@ from infrastructure.database.repositories import (
     ChatMemberRepository,
 )
 from infrastructure.telegram.states import AddLessonSG, AddReminderSG, \
-    RemoveLessonSG, RemoveReminderSG, SqlConsoleSG, CompleteLessonSG
+    RemoveLessonSG, RemoveReminderSG, SqlConsoleSG, CompleteLessonSG, GroupRegSG
 from infrastructure.telegram.keyboards import main_menu_keyboard, \
     quick_actions_keyboard
 
@@ -52,16 +52,7 @@ chat_service = ChatService(chat_repo, chat_member_repo, user_repo)
 analytics_service = AnalyticsService()
 statistics_service = StatisticsService()
 
-
-# ==========================================
-# СОСТОЯНИЯ ДЛЯ ГРУППОВОЙ РЕГИСТРАЦИИ
-# ==========================================
-class GroupRegSG(StatesGroup):
-    input_username = State()
-    role_selection = State()
-    name_input = State()
-    confirmation = State()
-
+USERNAME_PATTERN = re.compile(r'^@([a-zA-Z0-9_]{5,32})$')
 
 # ==========================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -211,125 +202,65 @@ async def _handle_private_start(message: Message, state: FSMContext):
 # ==========================================
 # ЛОГИКА ГРУППОВОГО ЧАТА
 # ==========================================
+# ==========================================
+# ГРУППОВАЯ РЕГИСТРАЦИЯ (НОВАЯ ЛОГИКА)
+# ==========================================
+
 async def _handle_group_start(message: Message, state: FSMContext):
+    """Начало регистрации в группе: приглашение ввести первый @username."""
     await message.answer(
         "Приветствую, это Бот-помощник для проведения онлайн занятий.\n"
         "Расскажи мне об участниках и можем стартовать!\n\n"
         "⚠️ Telegram API не позволяет ботам автоматически получать ID участников.\n"
-        "Пожалуйста, введите @username первого участника (или отправьте /done для завершения):"
+        "Пожалуйста, введите @username первого участника или отправьте /done для завершения."
     )
-    await state.set_data({
-        "members": [],
-        "chat_id": message.chat.id,
-        "idx": 0
-    })
-    await state.set_state(GroupRegSG.input_username)
+    await state.set_state(GroupRegSG.waiting_for_username)
 
 
-@router.message(Command("done"), StateFilter(GroupRegSG.input_username))
-async def _finish_username_input(message: Message, state: FSMContext):
-    data = await state.get_data()
-    members = data.get("members", [])
-
-    if not members:
-        await message.answer("✅ В чате нет участников для регистрации.")
-        await state.clear()
-        return
-
-    await state.update_data(idx=0)
-    await state.set_state(GroupRegSG.role_selection)
-    await _ask_role_for_current_member(message, state)
+@router.message(Command("done"), StateFilter(GroupRegSG.waiting_for_username))
+async def group_reg_done_early(message: Message, state: FSMContext):
+    """Завершение регистрации до ввода пользователей."""
+    await state.clear()
+    await message.answer("✅ Регистрация завершена. Если хотите добавить участников позже, используйте /start снова.")
 
 
-# В начале файла, замените текущий USERNAME_PATTERN на:
-USERNAME_PATTERN = re.compile(r'^@([a-zA-Z0-9_]{5,32})$')
-
-@router.message(StateFilter(GroupRegSG.input_username))
-async def _handle_username_input(message: Message, state: FSMContext):
+@router.message(StateFilter(GroupRegSG.waiting_for_username))
+async def group_reg_username_input(message: Message, state: FSMContext):
+    """Обработка ввода @username: начинаем регистрацию этого пользователя."""
     text = message.text.strip()
-    logger.info(text)
-
-    # Пропускаем команды, их обрабатывают другие хендлеры (опционально)
     if text.startswith("/"):
-        await message.answer(
-            "⚠️ Неверный формат. Пример: @ivan_ivanov или /done")
+        await message.answer("⚠️ Неверный формат. Введите @username или /done для завершения.")
         return
 
     match = USERNAME_PATTERN.match(text)
     if not match:
-        await message.answer(
-            "⚠️ Неверный формат. Введите @username (без пробелов).\n"
-            "Пример: @ivan_ivanov или /done для завершения.")
+        await message.answer("⚠️ Неверный формат. Введите @username (например, @ivan_ivanov) или /done.")
         return
 
-    username = match.group(1)  # username без '@'
-    data = await state.get_data()
-    members = data.get("members", [])
-
-    if any(m.get("username") == username for m in members):
-        await message.answer(f"⚠️ @{username} уже в списке.")
-        return
-
-    # Пытаемся найти реальный ID. Если нет — ставим 0 (временный плейсхолдер)
-    existing = await user_repo.get_by_username(username)
-    user_id = existing.telegram_id if existing else 0
-
-    members.append({"username": username, "id": user_id})
-    await state.update_data(members=members)
-    await message.answer(
-        f"✅ @{username} добавлен. Введите следующего или /done:")
-
-
-async def _ask_role_for_current_member(message: Message, state: FSMContext):
-    data = await state.get_data()
-    idx = data.get("idx", 0)
-    members = data.get("members", [])
-
-    if idx >= len(members):
-        await _finish_group_registration(message, state)
-        return
-
-    current_user = members[idx]
-    await state.update_data(current_user=current_user)
-    await message.answer(f"Кто @{current_user['username']}?",
-                         reply_markup=_build_role_keyboard())
-
-
-async def _finish_group_registration(message: Message, state: FSMContext):
-    await state.clear()
-
-    # Определяем роль отправителя, чтобы показать соответствующие кнопки
-    user = await user_repo.get_by_telegram_id(message.from_user.id)
-    role = user.role if user else UserRole.STUDENT
+    username = match.group(1)
+    await state.update_data(current_username=username)
+    await state.set_state(GroupRegSG.role_selection)
 
     await message.answer(
-        "✅ Регистрация успешно прошла, готов к работе!",
-        reply_markup=main_menu_keyboard(role, is_group=True)
-    )
-    await message.answer(
-        "Быстрые действия:",
-        reply_markup=quick_actions_keyboard(role, is_group=True)
+        f"Кто @{username}?",
+        reply_markup=_build_role_keyboard()
     )
 
 
-# ==========================================
-# FSM ХЕНДЛЕРЫ ГРУППОВОЙ РЕГИСТРАЦИИ
-# ==========================================
-@router.callback_query(F.data.startswith("reg_role:"),
-                       GroupRegSG.role_selection)
-async def _handle_role_selection(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("reg_role:"), GroupRegSG.role_selection)
+async def group_reg_role_selected(callback: CallbackQuery, state: FSMContext):
     role_value = callback.data.split(":", 1)[1]
     await state.update_data(temp_role=role_value)
     await state.set_state(GroupRegSG.name_input)
 
     data = await state.get_data()
-    username = data["current_user"]["username"]
+    username = data["current_username"]
     await callback.message.edit_text(f"Как зовут @{username}?")
     await callback.answer()
 
 
 @router.message(GroupRegSG.name_input)
-async def _handle_name_input(message: Message, state: FSMContext):
+async def group_reg_name_input(message: Message, state: FSMContext):
     full_name = message.text.strip()
     if not full_name:
         await message.answer("Пожалуйста, введите имя и фамилию.")
@@ -339,7 +270,7 @@ async def _handle_name_input(message: Message, state: FSMContext):
     await state.set_state(GroupRegSG.confirmation)
 
     data = await state.get_data()
-    username = data["current_user"]["username"]
+    username = data["current_username"]
     role_display = {
         "student": "Ученик",
         "teacher": "Преподаватель",
@@ -352,60 +283,65 @@ async def _handle_name_input(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(F.data.startswith("reg_confirm:"),
-                       GroupRegSG.confirmation)
-async def _handle_confirmation(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("reg_confirm:"), GroupRegSG.confirmation)
+async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":", 1)[1]
     data = await state.get_data()
+    username = data["current_username"]
 
     if action == "no":
+        # Возвращаемся к выбору роли для этого же пользователя
         await state.set_state(GroupRegSG.role_selection)
-        await _ask_role_for_current_member(callback.message, state)
+        await callback.message.edit_text(
+            f"Кто @{username}?",
+            reply_markup=_build_role_keyboard()
+        )
         await callback.answer()
         return
 
-    current_user = data["current_user"]
-    username = current_user["username"]
-
-    # Гарантируем non-null ID. Если юзер не писал боту, ставим 0.
-    # Telegram ID всегда > 0, поэтому 0 безопасен как временный маркер.
-    telegram_id = current_user.get("id") or 0
-
-    role_map = {
-        "student": UserRole.STUDENT,
-        "teacher": UserRole.TEACHER,
-        "parent": UserRole.STUDENT,
-    }
-
-    new_user = User(
-        telegram_id=telegram_id,
-        username=username if "ID_" not in username else "",
-        full_name=data["temp_name"],
-        role=role_map.get(data["temp_role"], UserRole.STUDENT),
-        is_active=True,
-    )
-
-    # Логика Upsert: если юзер уже есть — обновляем, если нет — создаём
-    existing_by_id = await user_repo.get_by_telegram_id(
-        telegram_id) if telegram_id != 0 else None
+    # Действие "yes": сохраняем пользователя в БД
+    telegram_id = 0  # временный ID (0 означает, что пользователь ещё не писал боту)
     existing_by_username = await user_repo.get_by_username(username)
-    existing = existing_by_id or existing_by_username
-
-    if existing:
-        existing.full_name = new_user.full_name
-        existing.role = new_user.role
-        await user_repo.update(existing)
+    # Если пользователь уже существует, обновим его данные
+    if existing_by_username:
+        existing_by_username.full_name = data["temp_name"]
+        existing_by_username.role = {
+            "student": UserRole.STUDENT,
+            "teacher": UserRole.TEACHER,
+            "parent": UserRole.STUDENT,
+        }.get(data["temp_role"], UserRole.STUDENT)
+        await user_repo.update(existing_by_username)
     else:
+        new_user = User(
+            telegram_id=telegram_id,
+            username=username,
+            full_name=data["temp_name"],
+            role={
+                "student": UserRole.STUDENT,
+                "teacher": UserRole.TEACHER,
+                "parent": UserRole.STUDENT,
+            }.get(data["temp_role"], UserRole.STUDENT),
+            is_active=True,
+        )
         try:
             await user_repo.create(new_user)
         except Exception:
-            pass  # Игнорируем конфликты уникальности, если запись уже появилась
+            pass  # Игнорируем конфликты уникальности
 
-    await state.update_data(idx=data["idx"] + 1)
-    await state.set_state(GroupRegSG.role_selection)
-    await _ask_role_for_current_member(callback.message, state)
+    # После успешного сохранения возвращаемся к вводу следующего @username
+    await callback.message.edit_text(
+        f"✅ @{username} зарегистрирован.\n\n"
+        "Введите следующий @username или отправьте /done для завершения."
+    )
+    await state.set_state(GroupRegSG.waiting_for_username)
     await callback.answer()
 
+
+@router.message(Command("done"), StateFilter(GroupRegSG.role_selection, GroupRegSG.name_input, GroupRegSG.confirmation))
+async def group_reg_done_anytime(message: Message, state: FSMContext):
+    """Завершение регистрации в любой момент (кроме ожидания username)."""
+    await state.clear()
+    await message.answer("✅ Регистрация завершена. Готов к работе!")
 
 # ==========================================
 # ОСНОВНОЙ ХЕНДЛЕР /start
