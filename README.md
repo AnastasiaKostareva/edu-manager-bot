@@ -208,7 +208,7 @@ bot:
   description: "Бот для управления занятиями"
 
 database:
-  host: "localhost" #или db если через докер
+  host: "localhost"
   port: 5432
   user: "edu_user"
   password: "your_password"
@@ -253,54 +253,29 @@ DB_PASSWORD=your_secure_password
 POSTGRES_PASSWORD=your_secure_password
 ADMIN_TELEGRAM_ID=123456789
 ```
-
-2. **Создать `docker-compose.yml`**
+2. **Настроить `appsettings.yaml`**
 ```yaml
-version: '3.8'
+bot:
+  name: "lesson_assistant_bot"
+  token: "YOUR_BOT_TOKEN_FROM_BOTFATHER"
+  description: "Бот для управления занятиями"
 
-services:
-  db:
-    image: postgres:14-alpine
-    environment:
-      POSTGRES_USER: edu_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: edu_manager
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
+database:
+  host: "db"
+  port: 5432
+  user: "edu_user"
+  password: "your_password"
+  database: "edu_manager"
 
-  bot:
-    build: .
-    depends_on:
-      - db
-    environment:
-      BOT_TOKEN: ${BOT_TOKEN}
-      DB_HOST: db
-      DB_PASSWORD: ${DB_PASSWORD}
-      ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
-    volumes:
-      - ./appsettings.yaml:/app/appsettings.yaml
-    restart: unless-stopped
+scheduler:
+  check_interval_seconds: 60
+  reminder_before_minutes: 5
 
-volumes:
-  postgres_data:
+admins:
+  - "123456789"  # Ваш telegram_id (узнать у @userinfobot)
 ```
 
-3. **Создать `Dockerfile`**
-```dockerfile
-FROM python:3.10-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["python", "main.py"]
-```
-
-4. **Запустить**
+3. **Запустить**
 ```bash
 docker-compose up -d
 ```
