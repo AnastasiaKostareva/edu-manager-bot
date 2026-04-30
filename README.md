@@ -208,7 +208,7 @@ bot:
   description: "Бот для управления занятиями"
 
 database:
-  host: "localhost"
+  host: "localhost" #или db если через докер
   port: 5432
   user: "edu_user"
   password: "your_password"
