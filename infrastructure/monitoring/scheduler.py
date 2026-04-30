@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot
@@ -57,7 +57,7 @@ class Scheduler:
             await asyncio.sleep(interval)
 
     async def _check_reminders(self):
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         pending = await self.reminder_repo.get_pending(now)
 
         for reminder in pending:
@@ -73,7 +73,7 @@ class Scheduler:
             if not lesson:
                 return
 
-            time_diff = lesson.scheduled_at - datetime.now()
+            time_diff = lesson.scheduled_at - datetime.now(timezone.utc)
             minutes = int(time_diff.total_seconds() / 60)
 
             if reminder.reminder_type == ReminderType.LESSON:

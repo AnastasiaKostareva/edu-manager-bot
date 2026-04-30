@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: edu_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: edu_manager
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  bot:
+    build: .
+    depends_on:
+      - db
+    command: >
+      sh -c "
+        python wait_db.py &&
+        echo 'Применение миграций...' &&
+        (aerich init-db || aerich upgrade) &&
+        echo 'Запуск бота...' &&
+        python main.py
+      "
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      DB_HOST: db
+      DB_PASSWORD: ${DB_PASSWORD}
+      ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
+      PGPASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./appsettings.yaml:/app/appsettings.yaml
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from domain.entities import Reminder, ReminderTime, ReminderType, User
 from domain.exceptions import ValidationException
@@ -39,7 +39,7 @@ class ReminderService:
             raise ValidationException("Lesson not found")
 
         remind_at = lesson.scheduled_at - timedelta(minutes=reminder_time.minutes)
-        if remind_at <= datetime.now():
+        if remind_at <= datetime.now(timezone.utc):
             raise ValidationException("Reminder time is in the past")
 
         reminder = Reminder(

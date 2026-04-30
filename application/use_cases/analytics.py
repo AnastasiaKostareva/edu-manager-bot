@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Optional
 from dataclasses import dataclass
 
-from tortoise import connections
+from tortoise import Tortoise
 from tortoise.exceptions import OperationalError, DBConnectionError
 
 from domain.entities import User, UserRole
@@ -93,7 +93,7 @@ class AnalyticsService:
         timeout = timeout_ms or self.QUERY_TIMEOUT_MS
 
         try:
-            conn = connections.get(self._connection_name)
+            conn = Tortoise.get_connection("models")
 
             # Получаем низкоуровневое подключение для установки таймаута
             db = conn._connection

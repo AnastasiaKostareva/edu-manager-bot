@@ -4,3 +4,5 @@ pytest==9.0.3
 python-dotenv==1.2.2
 PyYAML==6.0.3
 tortoise==0.1.1
+aerich==0.7.2
+asyncpg==0.29.0
