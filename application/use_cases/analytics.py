@@ -93,16 +93,11 @@ class AnalyticsService:
         timeout = timeout_ms or self.QUERY_TIMEOUT_MS
 
         try:
-            conn = Tortoise.get_connection("models")
-
-            # Получаем низкоуровневое подключение для установки таймаута
-            db = conn._connection
+            conn = Tortoise.get_connection("default")
 
             start_time = datetime.now()
 
-            # Устанавливаем таймаут и режим read-only для сессии
             await conn.execute_query(f"SET statement_timeout = {timeout};")
-            await conn.execute_query("SET TRANSACTION READ ONLY;")
 
             # Выполняем запрос
             result = await conn.execute_query_dict(clean_query)
