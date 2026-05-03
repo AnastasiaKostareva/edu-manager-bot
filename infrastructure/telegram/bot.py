@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover - опциональная зависим�
 from dotenv import load_dotenv
 
 from application.config import load_config
-from infrastructure.telegram.handlers import router
+from infrastructure.telegram.handlers import main_router
 
 
 def build_bot_and_dispatcher() -> tuple[Bot, Dispatcher]:
@@ -31,5 +31,5 @@ def build_bot_and_dispatcher() -> tuple[Bot, Dispatcher]:
 
     bot = Bot(token=token_bot)
     dp = Dispatcher(storage=storage)
-    dp.include_router(router)
+    dp.include_router(main_router)
     return bot, dp

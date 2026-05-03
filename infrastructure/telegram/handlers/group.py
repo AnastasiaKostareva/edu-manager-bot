@@ -1,0 +1,224 @@
+"""
+Хендлеры для групповых чатов.
+"""
+from __future__ import annotations
+
+import logging
+
+from aiogram import Router, F
+from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+
+from application.use_cases.chat import ChatService
+from application.use_cases.lesson import LessonService
+from domain.entities import UserRole
+from infrastructure.database.repositories import (
+    UserRepository, LessonRepository, ChatRepository, ChatMemberRepository,
+)
+from infrastructure.telegram.handlers.helpers import (
+    MSK, get_or_create_user, ensure_chat_exists,
+)
+from infrastructure.telegram.keyboards import add_cancel_button
+from infrastructure.telegram.states import GroupRegSG
+
+logger = logging.getLogger(__name__)
+
+router = Router()
+
+user_repo = UserRepository()
+lesson_repo = LessonRepository()
+chat_repo = ChatRepository()
+chat_member_repo = ChatMemberRepository()
+
+lesson_service = LessonService(lesson_repo)
+chat_service = ChatService(chat_repo, chat_member_repo, user_repo)
+
+USERNAME_PATTERN = __import__("re").compile(r'^@?([a-zA-Z0-9_]{5,32})$')
+
+_GROUP = F.chat.type.in_({"group", "supergroup"})
+
+
+# ─────────────────────────────────────────
+# /start в группе — регистрация участников
+# ─────────────────────────────────────────
+
+@router.message(_GROUP, CommandStart(), StateFilter("*"))
+async def group_start(message: Message, state: FSMContext):
+    await state.clear()
+    await ensure_chat_exists(message)
+    await state.update_data(initiator_id=message.from_user.id)
+    await message.answer(
+        "Привет! Я бот-помощник для онлайн-занятий.\n\n"
+        "⚠️ Telegram API не позволяет получать ID участников автоматически.\n"
+        "Введите @username участника или /done для завершения."
+    )
+    await state.set_state(GroupRegSG.waiting_for_username)
+
+
+@router.message(_GROUP, Command("done"), StateFilter(GroupRegSG.waiting_for_username))
+async def group_reg_done_early(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get("initiator_id"):
+        return
+    await state.clear()
+    await message.answer("✅ Регистрация завершена. Для добавления участников — /start снова.")
+
+
+@router.message(_GROUP, StateFilter(GroupRegSG.waiting_for_username))
+async def group_reg_username_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get("initiator_id"):
+        return
+    text = message.text.strip()
+    if text.startswith("/"):
+        await message.answer("⚠️ Введите @username или /done для завершения.")
+        return
+    match = USERNAME_PATTERN.match(text)
+    if not match:
+        await message.answer("⚠️ Неверный формат. Введите @username (например, @ivan_ivanov) или /done.")
+        return
+    username = match.group(1)
+    await state.update_data(current_username=username)
+    await state.set_state(GroupRegSG.role_selection)
+    await message.answer(
+        f"Кто @{username}?",
+        reply_markup=add_cancel_button(_role_keyboard()),
+    )
+
+
+@router.callback_query(F.data.startswith("reg_role:"), GroupRegSG.role_selection)
+async def group_reg_role_selected(callback: CallbackQuery, state: FSMContext):
+    role_value = callback.data.split(":", 1)[1]
+    await state.update_data(temp_role=role_value)
+    await state.set_state(GroupRegSG.name_input)
+    data = await state.get_data()
+    await callback.message.edit_text(f"Как зовут @{data['current_username']}?")
+    await callback.answer()
+
+
+@router.message(_GROUP, GroupRegSG.name_input)
+async def group_reg_name_input(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get("initiator_id"):
+        return
+    full_name = message.text.strip()
+    if not full_name:
+        await message.answer("Введите имя и фамилию.")
+        return
+    await state.update_data(temp_name=full_name)
+    await state.set_state(GroupRegSG.confirmation)
+    data = await state.get_data()
+    role_display = {"student": "Ученик", "teacher": "Преподаватель", "parent": "Родитель"}.get(
+        data["temp_role"], data["temp_role"]
+    )
+    await message.answer(
+        f"@{data['current_username']} — {full_name}, {role_display}\nВсё верно?",
+        reply_markup=add_cancel_button(_confirm_keyboard()),
+    )
+
+
+@router.callback_query(F.data.startswith("reg_confirm:"), GroupRegSG.confirmation)
+async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    username = data["current_username"]
+
+    if action == "no":
+        await state.set_state(GroupRegSG.role_selection)
+        await callback.message.edit_text(f"Кто @{username}?", reply_markup=add_cancel_button(_role_keyboard()))
+        await callback.answer()
+        return
+
+    clean_username = username.lstrip("@")
+    bot_info = await callback.bot.get_me()
+    if clean_username.lower() == bot_info.username.lower():
+        await callback.message.edit_text("❌ Нельзя зарегистрировать бота.")
+        await state.set_state(GroupRegSG.waiting_for_username)
+        await callback.answer()
+        return
+
+    role_map = {"student": UserRole.STUDENT, "teacher": UserRole.TEACHER, "parent": UserRole.STUDENT}
+    role = role_map.get(data["temp_role"], UserRole.STUDENT)
+
+    existing = await user_repo.get_by_username(clean_username)
+    if existing:
+        existing.full_name = data["temp_name"]
+        existing.role = role
+        await user_repo.update(existing)
+    else:
+        from domain.entities import User
+        try:
+            await user_repo.create(User(
+                telegram_id=0, username=clean_username,
+                full_name=data["temp_name"], role=role, is_active=False,
+            ))
+        except Exception:
+            pass
+
+    await callback.message.edit_text(
+        f"✅ @{username} зарегистрирован.\n\nВведите следующий @username или /done."
+    )
+    await state.set_state(GroupRegSG.waiting_for_username)
+    await callback.answer()
+
+
+@router.message(
+    _GROUP,
+    Command("done"),
+    StateFilter(GroupRegSG.role_selection, GroupRegSG.name_input, GroupRegSG.confirmation),
+)
+async def group_reg_done_anytime(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get("initiator_id"):
+        return
+    await state.clear()
+    await message.answer("✅ Регистрация завершена!")
+
+
+# ─────────────────────────────────────────
+# Мои занятия в группе
+# ─────────────────────────────────────────
+
+@router.message(_GROUP, StateFilter("*"), F.text == "Мои занятия")
+@router.message(_GROUP, StateFilter("*"), Command("lessons"))
+async def group_lessons(message: Message, state: FSMContext):
+    await state.clear()
+    is_initialized = await chat_service.is_chat_initialized(message.chat.id)
+    if not is_initialized:
+        await message.answer("⚠️ Чат ещё не настроен. Выполните /start для регистрации участников.")
+        return
+
+    lessons = await lesson_service.list_for_chat(message.chat.id)
+    if not lessons:
+        await message.answer("В этом чате пока нет назначенных занятий.")
+        return
+
+    text = "📚 Занятия в этом чате:\n\n" + "\n".join(
+        f"{i + 1}. {l.topic} — {_fmt_dt(l.scheduled_at)}"
+        for i, l in enumerate(lessons)
+    )
+    await message.answer(text)
+
+
+def _fmt_dt(dt) -> str:
+    if dt is None:
+        return "—"
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(MSK)
+    return dt.strftime("%d.%m %H:%M")
+
+
+def _role_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Ученик", callback_data="reg_role:student")],
+        [InlineKeyboardButton(text="Преподаватель", callback_data="reg_role:teacher")],
+        [InlineKeyboardButton(text="Родитель", callback_data="reg_role:parent")],
+    ])
+
+
+def _confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Верно", callback_data="reg_confirm:yes")],
+        [InlineKeyboardButton(text="Ошибся", callback_data="reg_confirm:no")],
+    ])

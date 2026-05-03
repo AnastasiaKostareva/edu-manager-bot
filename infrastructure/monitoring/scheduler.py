@@ -12,6 +12,9 @@ from domain.entities import LessonStatus, ReminderType
 
 logger = logging.getLogger(__name__)
 
+MSK = timezone(timedelta(hours=3))
+CHAT_NOTIFY_COOLDOWN_DAYS = 7
+
 
 class Scheduler:
     def __init__(self, bot: Bot):
@@ -23,6 +26,8 @@ class Scheduler:
         self.lesson_service = LessonService(self.lesson_repo)
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        # Дедупликация уведомлений о чатах без занятий: {chat_id: last_notified_at}
+        self._chat_notified_at: dict[int, datetime] = {}
 
     async def start(self):
         if self._running:
@@ -57,7 +62,6 @@ class Scheduler:
             await asyncio.sleep(interval)
 
     async def _check_reminders(self):
-        # Use UTC-aware now to match DB-stored timestamps (Tortoise usually returns tz-aware datetimes).
         now = datetime.now(timezone.utc)
         pending = await self.reminder_repo.get_pending(now)
 
@@ -74,24 +78,23 @@ class Scheduler:
             if not lesson:
                 return
 
-            # Ensure we compute difference with datetimes having the same tzinfo.
-            if lesson.scheduled_at.tzinfo is not None:
-                now = datetime.now(timezone.utc)
-            else:
-                now = datetime.now()
-            time_diff = lesson.scheduled_at - now
-            minutes = int(time_diff.total_seconds() / 60)
+            now = datetime.now(timezone.utc)
+            lesson_dt = lesson.scheduled_at
+            if lesson_dt.tzinfo is None:
+                lesson_dt = lesson_dt.replace(tzinfo=MSK)
+            time_diff = lesson_dt - now
+            minutes = max(0, int(time_diff.total_seconds() / 60))
 
             if reminder.reminder_type == ReminderType.LESSON:
-                text = f"Внимание!\nЗанятие \"{lesson.topic}\" начнется через {minutes} мин."
+                text = f"⏰ Напоминание!\nЗанятие «{lesson.topic}» начнётся через {minutes} мин."
             elif reminder.reminder_type == ReminderType.HOMEWORK:
-                text = f"Напоминание о домашнем задании к занятию \"{lesson.topic}\""
+                text = f"📝 Напоминание о домашнем задании к занятию «{lesson.topic}»"
             else:
                 text = reminder.custom_text or "Напоминание"
 
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Начать занятие", callback_data=f"start_lesson:{lesson.id}")]
+                [InlineKeyboardButton(text="▶️ Начать занятие", callback_data=f"start_lesson:{lesson.id}")]
             ])
 
             await self.bot.send_message(reminder.user_id, text, reply_markup=keyboard)
@@ -99,17 +102,10 @@ class Scheduler:
             await self.bot.send_message(reminder.user_id, reminder.custom_text or "Напоминание")
 
     async def _check_lesson_completions(self):
-        """
-        Проверяет занятия, которые закончились и требуют подтверждения длительности.
-        Отправляет преподавателю инлайн-кнопки для выбора времени.
-        """
         lessons = await self.lesson_service.get_lessons_needing_completion()
 
         for lesson in lessons:
             try:
-                # Проверяем, не отправляли ли мы уже запрос (можно добавить флаг в БД)
-                # Пока упрощенная версия - отправляем каждый раз при проверке
-
                 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⏱ 45 мин", callback_data=f"complete_lesson:{lesson.id}:45")],
@@ -118,54 +114,51 @@ class Scheduler:
                     [InlineKeyboardButton(text="✏️ Свой вариант", callback_data=f"complete_lesson:{lesson.id}:custom")],
                 ])
 
-                # Определяем время окончания
-                end_time = lesson.scheduled_end or (lesson.scheduled_at + timedelta(hours=1))
+                lesson_dt = lesson.scheduled_at
+                if lesson_dt.tzinfo is None:
+                    lesson_dt = lesson_dt.replace(tzinfo=MSK)
+                end_dt = lesson.scheduled_end or (lesson_dt + timedelta(hours=1))
 
                 message_text = (
                     f"⏰ Занятие завершено!\n\n"
                     f"📚 Тема: {lesson.topic}\n"
-                    f"🕐 Запланировано: {lesson.scheduled_at.strftime('%d.%m %H:%M')}\n"
-                    f"🕑 Окончание: {end_time.strftime('%H:%M')}\n\n"
+                    f"🕐 Запланировано: {lesson_dt.astimezone(MSK).strftime('%d.%m %H:%M')} МСК\n"
+                    f"🕑 Окончание: {end_dt.astimezone(MSK).strftime('%H:%M')} МСК\n\n"
                     f"Пожалуйста, укажите фактическую длительность занятия:"
                 )
 
-                # Отправляем создателю занятия (преподавателю)
                 await self.bot.send_message(
                     lesson.created_by,
                     message_text,
                     reply_markup=keyboard
                 )
-
                 logger.info(f"Sent completion request for lesson {lesson.id} to user {lesson.created_by}")
 
             except Exception as e:
                 logger.error(f"Failed to send completion request for lesson {lesson.id}: {e}")
 
     async def _check_overdue_lessons(self):
-        """
-        Проверяет занятия, не закрытые в течение 24 часов.
-        Помечает их как OVERDUE и отправляет алерт администраторам.
-        """
         overdue_lessons = await self.lesson_service.get_overdue_lessons(hours=24)
 
         for lesson in overdue_lessons:
             try:
-                # Помечаем как просроченное
                 if lesson.status != LessonStatus.OVERDUE:
                     await self.lesson_service.mark_overdue(lesson.id)
 
-                    # Получаем информацию о преподавателе
                     teacher = await self.user_repo.get_by_telegram_id(lesson.created_by)
                     teacher_name = teacher.full_name or teacher.username if teacher else f"ID {lesson.created_by}"
 
-                    # Отправляем алерт всем администраторам
                     admins = await self.user_repo.get_all_admins()
+
+                    lesson_dt = lesson.scheduled_at
+                    if lesson_dt.tzinfo is None:
+                        lesson_dt = lesson_dt.replace(tzinfo=MSK)
 
                     alert_text = (
                         f"⚠️ ПРОСРОЧЕННОЕ ЗАНЯТИЕ\n\n"
                         f"📚 Тема: {lesson.topic}\n"
                         f"👨‍🏫 Преподаватель: {teacher_name}\n"
-                        f"🕐 Дата: {lesson.scheduled_at.strftime('%d.%m.%Y %H:%M')}\n"
+                        f"🕐 Дата: {lesson_dt.astimezone(MSK).strftime('%d.%m.%Y %H:%M')} МСК\n"
                         f"⏰ Не закрыто более 24 часов\n\n"
                         f"ID занятия: {lesson.id}"
                     )
@@ -183,22 +176,43 @@ class Scheduler:
 
     async def _check_chats(self):
         chats = await self.chat_repo.get_all_active()
+        now = datetime.now(timezone.utc)
+        cooldown = timedelta(days=CHAT_NOTIFY_COOLDOWN_DAYS)
 
         for chat in chats:
+            # Личные чаты не тревожим уведомлениями о расписании
+            if chat.chat_type == "private":
+                continue
+
             try:
-                last_lesson = await self.lesson_repo.get_last_for_chat(chat.chat_id)
+                # Дедупликация: не слать уведомление чаще раза в неделю
+                last_notified = self._chat_notified_at.get(chat.chat_id)
+                if last_notified and (now - last_notified) < cooldown:
+                    continue
+
                 upcoming = await self.lesson_repo.get_upcoming_for_chat(chat.chat_id)
+                if upcoming:
+                    continue
 
-                if not last_lesson and not upcoming:
-                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="Назначить занятие", callback_data="schedule_lesson")]
-                    ])
+                last_lesson = await self.lesson_repo.get_last_for_chat(chat.chat_id)
+                stale = (
+                    last_lesson is None
+                    or (now - (last_lesson.scheduled_at if last_lesson.scheduled_at.tzinfo else last_lesson.scheduled_at.replace(tzinfo=MSK))) > timedelta(days=7)
+                )
+                if not stale:
+                    continue
 
-                    await self.bot.send_message(
-                        chat.chat_id,
-                        "Последнее занятие было давно\nНовое еще не назначено",
-                        reply_markup=keyboard
-                    )
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📅 Назначить занятие", callback_data="schedule_lesson")]
+                ])
+
+                await self.bot.send_message(
+                    chat.chat_id,
+                    "📭 Нет запланированных занятий.\nХотите назначить следующее?",
+                    reply_markup=keyboard
+                )
+                self._chat_notified_at[chat.chat_id] = now
+
             except Exception as e:
                 logger.error(f"Failed to check chat {chat.chat_id}: {e}")

@@ -17,14 +17,16 @@ services:
       sh -c "
         python wait_db.py &&
         echo 'Применение миграций...' &&
-        (aerich init-db || aerich upgrade) &&
+        aerich init-db || aerich upgrade &&
         echo 'Запуск бота...' &&
         python main.py
       "
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       DB_HOST: db
+      DB_USER: edu_user
       DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: edu_manager
       ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
       PGPASSWORD: ${DB_PASSWORD}
     volumes:

@@ -25,8 +25,16 @@ def main_menu_keyboard(role: UserRole,
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
-        input_field_placeholder="Выберите действие",
+        input_field_placeholder="Выберите действие или /cancel для отмены",
     )
+
+
+def add_cancel_button(keyboard: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    """Добавляет кнопку 'Отмена' в конец инлайн-клавиатуры."""
+    cancel_btn = [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_action")]
+    # Если последняя строка уже содержит кнопки, добавим отмену новой строкой
+    keyboard.inline_keyboard.append(cancel_btn)
+    return keyboard
 
 
 def quick_actions_keyboard(role: UserRole,

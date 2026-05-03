@@ -31,7 +31,7 @@ class UserRepository(IUserRepository):
 
     async def get_by_username(self, username: str) -> Optional[User]:
         from infrastructure.database.models import User as UserModel
-        model = await UserModel.get_or_none(username=username)
+        model = await UserModel.get_or_none(username__iexact=username)
         if not model:
             return None
         return User(
@@ -143,8 +143,23 @@ class LessonRepository(ILessonRepository):
         return [self._to_entity(m) for m in models]
 
     async def get_by_user_id(self, user_id: int) -> List[Lesson]:
+        """
+        Возвращает список занятий, связанных с пользователем.
+        Учитываются занятия в чатах, где пользователь является участником,
+        а также занятия, созданные пользователем напрямую.
+        """
         from infrastructure.database.models import Lesson as LessonModel
-        models = await LessonModel.filter(created_by=user_id).order_by("-scheduled_at")
+        from infrastructure.database.models import ChatMember as ChatMemberModel
+        from tortoise.expressions import Q
+        
+        # Находим все ID чатов, в которых состоит пользователь
+        user_chats = await ChatMemberModel.filter(user_id=user_id, is_active=True).values_list("chat_id", flat=True)
+        
+        # Находим занятия: либо в этих чатах, либо созданные пользователем напрямую
+        models = await LessonModel.filter(
+            Q(chat_id__in=user_chats) | Q(created_by_id=user_id)
+        )
+
         return [self._to_entity(m) for m in models]
 
     async def get_upcoming(self, limit: int = 10) -> List[Lesson]:
@@ -250,6 +265,7 @@ class ReminderRepository(IReminderRepository):
         from infrastructure.database.models import Reminder as ReminderModel
         model = await ReminderModel.create(
             user_id=reminder.user_id,
+            creator_id=reminder.creator_id,
             lesson_id=reminder.lesson_id,
             reminder_type=reminder.reminder_type.value,
             custom_text=reminder.custom_text,
@@ -284,6 +300,7 @@ class ReminderRepository(IReminderRepository):
         return Reminder(
             id=model.id,
             user_id=model.user_id,
+            creator_id=model.creator_id,
             lesson_id=model.lesson_id,
             reminder_type=ReminderType(model.reminder_type),
             custom_text=model.custom_text,

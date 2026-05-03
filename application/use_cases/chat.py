@@ -121,10 +121,19 @@ class ChatService:
         return await self.chat_member_repo.get_by_chat_and_user(chat_id, user_id)
 
     async def is_chat_initialized(self, chat_id: int) -> bool:
-        """Проверить, инициализирован ли чат."""
+        """Проверить, инициализирован ли чат (есть ли в нем занятия)."""
         chat = await self.chat_repo.get_by_id(chat_id)
         if not chat:
             return False
-        #members = await self.chat_member_repo.get_members_by_chat(chat_id)
-        #return len(members) > 0
-        return True
+        
+        # Чат считается инициализированным, если в нем есть хотя бы одно занятие
+        # или если это групповой чат, в котором прошла регистрация (есть участники)
+        from infrastructure.database.models import Lesson as LessonModel
+        from infrastructure.database.models import ChatMember as ChatMemberModel
+        
+        has_lessons = await LessonModel.filter(chat_id=chat_id).exists()
+        if has_lessons:
+            return True
+            
+        has_members = await ChatMemberModel.filter(chat_id=chat_id, is_active=True).exists()
+        return has_members

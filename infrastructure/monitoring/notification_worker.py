@@ -55,16 +55,19 @@ class NotificationWorker:
             await asyncio.sleep(interval)
 
     async def _check_and_send(self):
-        # Use timezone-aware now (UTC) - DB usually stores tz-aware datetimes
         now = datetime.now(timezone.utc)
         pending = await self.reminder_repo.get_pending(now)
+
+        if pending:
+            logger.info(f"NotificationWorker: found {len(pending)} pending reminder(s) at {now.isoformat()}")
 
         for reminder in pending:
             try:
                 await self._send_reminder(reminder)
                 await self.reminder_repo.mark_sent(reminder.id)
+                logger.info(f"Reminder {reminder.id} sent to user {reminder.user_id}")
             except Exception as e:
-                logger.error(f"Failed to send reminder {reminder.id}: {e}")
+                logger.error(f"Failed to send reminder {reminder.id} to user {reminder.user_id}: {e}", exc_info=True)
 
     async def _send_reminder(self, reminder):
         # If reminder linked to lesson - include lesson info

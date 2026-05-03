@@ -182,6 +182,14 @@ class Reminder(models.Model):
         source_field="user_id",
         to_field="telegram_id"
     )
+    creator = fields.ForeignKeyField(
+        "models.User",
+        related_name="created_reminders",
+        on_delete=fields.SET_NULL,
+        source_field="creator_id",
+        to_field="telegram_id",
+        null=True,
+    )
     lesson = fields.ForeignKeyField(
         "models.Lesson",
         related_name="reminders",

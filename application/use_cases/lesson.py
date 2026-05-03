@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from domain.entities import Lesson, LessonStatus, RepeatType, User, UserRole
 from domain.exceptions import PermissionDeniedException, ValidationException
@@ -10,12 +10,15 @@ class LessonService:
         self._lesson_repo = lesson_repo
 
     async def list_for_user(self, user_id: int) -> list[Lesson]:
+        """Возвращает список всех занятий, к которым имеет отношение пользователь."""
         return await self._lesson_repo.get_by_user_id(user_id)
 
     async def list_for_chat(self, chat_id: int) -> list[Lesson]:
+        """Возвращает список занятий для конкретного чата."""
         return await self._lesson_repo.get_by_chat_id(chat_id)
 
     async def delete(self, lesson_id: int) -> None:
+        """Удаляет занятие по его ID."""
         await self._lesson_repo.delete(lesson_id)
 
     async def schedule(
@@ -28,11 +31,15 @@ class LessonService:
         lesson_link: str | None = None,
         repeat_type: RepeatType | None = None,
     ) -> Lesson:
+        """
+        Назначает новое занятие.
+        Выполняет проверки прав и валидацию данных.
+        """
         if actor.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
             raise PermissionDeniedException("No permission to schedule lesson")
         if not topic:
             raise ValidationException("Topic is required")
-        if scheduled_at <= datetime.now():
+        if scheduled_at <= datetime.now(timezone.utc):
             raise ValidationException("scheduled_at must be in the future")
 
         lesson = Lesson(
@@ -127,7 +134,7 @@ class LessonService:
             Список занятий, требующих завершения
         """
         from infrastructure.database.models import Lesson as LessonModel
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         # Получаем все занятия, которые должны были закончиться
         models = await LessonModel.filter(
@@ -174,7 +181,7 @@ class LessonService:
         from infrastructure.database.models import Lesson as LessonModel
         from datetime import timedelta
 
-        cutoff_time = datetime.now() - timedelta(hours=hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         models = await LessonModel.filter(
             status__in=[LessonStatus.SCHEDULED.value, LessonStatus.IN_PROGRESS.value],

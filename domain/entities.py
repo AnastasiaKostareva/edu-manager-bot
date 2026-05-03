@@ -59,9 +59,18 @@ class ReminderTime(str, Enum):
         return mapping[self]
 
     @classmethod
-    def from_string(cls, value: str) -> "ReminderTime":
+    def from_string(cls, value: str) -> "ReminderTime | ParsedReminderTime":
+        import re
         normalized = (value or "").strip().lower()
-        return cls(normalized)
+        try:
+            return cls(normalized)
+        except ValueError:
+            pass
+        m = re.fullmatch(r'(\d+)(m|h|d)', normalized)
+        if not m:
+            raise ValueError(f"Unknown reminder time: {normalized!r}")
+        amount, unit = int(m.group(1)), m.group(2)
+        return ParsedReminderTime(minutes=amount * {"m": 1, "h": 60, "d": 1440}[unit])
 
     @classmethod
     def from_custom_format(cls, value: str) -> "ParsedReminderTime":
@@ -159,6 +168,7 @@ class Reminder:
     reminder_type: ReminderType
     remind_at: datetime
     custom_text: Optional[str] = None
+    creator_id: Optional[int] = None
     is_sent: bool = False
     created_at: datetime = field(default_factory=datetime.utcnow)
 

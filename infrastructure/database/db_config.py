@@ -22,7 +22,9 @@ def get_tortoise_config():
                 "models": ["infrastructure.database.models", "aerich.models"],
                 "default_connection": "default",
             }
-        }
+        },
+        "use_tz": True,
+        "timezone": "UTC"
     }
 
 
@@ -31,6 +33,7 @@ TORTOISE_ORM = get_tortoise_config()
 
 async def init_db():
     await Tortoise.init(config=TORTOISE_ORM)
+    await Tortoise.generate_schemas(safe=True)
 
 
 async def close_db():
