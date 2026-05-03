@@ -13,6 +13,7 @@ class AddLessonSG(StatesGroup):
     time = State()            # Время занятия
     confirmation = State()    # Подтверждение данных
     link = State()
+    duration = State()        # Длительность занятия
 
 
 class RemoveLessonSG(StatesGroup):
@@ -49,3 +50,8 @@ class StartLessonSG(StatesGroup):
 
 class CompleteLessonSG(StatesGroup):
     custom_duration = State()
+
+
+class EditLessonSG(StatesGroup):
+    field = State()
+    new_duration = State()

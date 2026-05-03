@@ -1,9 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import logging
 
 from domain.entities import Lesson, LessonStatus, RepeatType, User, UserRole
 from domain.exceptions import PermissionDeniedException, ValidationException
 from application.interfaces.repositories import ILessonRepository
 
+logger = logging.getLogger(__name__)
 
 class LessonService:
     def __init__(self, lesson_repo: ILessonRepository):
@@ -25,6 +27,7 @@ class LessonService:
         chat_id: int,
         scheduled_at: datetime,
         topic: str,
+        duration_minutes: int,
         lesson_link: str | None = None,
         repeat_type: RepeatType | None = None,
     ) -> Lesson:
@@ -35,16 +38,51 @@ class LessonService:
         if scheduled_at <= datetime.now():
             raise ValidationException("scheduled_at must be in the future")
 
+        scheduled_end = scheduled_at + timedelta(minutes=duration_minutes)
+
         lesson = Lesson(
             chat_id=chat_id,
             created_by=actor.telegram_id,
             lesson_link=lesson_link,
             repeat_type=repeat_type,
             scheduled_at=scheduled_at,
+            scheduled_end=scheduled_end,
+            duration_minutes=duration_minutes,
             status=LessonStatus.SCHEDULED,
             topic=topic,
         )
-        return await self._lesson_repo.create(lesson)
+        
+        # Insert code into LessonRepository since it doesn't have an add method yet
+        await self._lesson_repo.add(lesson)
+
+        # Интеграция с Scheduler: планирование напоминания за час и запрос подтверждения завершения
+        try:
+            from infrastructure.monitoring.scheduler import Scheduler, run_send_automatic_reminder_job, run_ask_completion_job
+            scheduler = Scheduler.get_instance()
+            if scheduler:
+                # Напоминание за 60 минут
+                remind_time = scheduled_at - timedelta(minutes=60)
+                if remind_time > datetime.now(timezone.utc):
+                    scheduler.schedule_reminder(
+                        job_id=f"remind_lesson_{lesson.id}",
+                        run_date=remind_time,
+                        func=run_send_automatic_reminder_job,
+                        chat_id=actor.telegram_id,
+                        topic=topic,
+                        minutes=60
+                    )
+
+                # Подтверждение завершения по scheduled_end
+                scheduler.schedule_reminder(
+                    job_id=f"complete_lesson_{lesson.id}",
+                    run_date=scheduled_end,
+                    func=run_ask_completion_job,
+                    lesson_id=lesson.id
+                )
+        except Exception as e:
+            logger.error(f"Ошибка при планировании задач для урока {lesson.id}: {e}")
+
+        return lesson
 
     async def upcoming(self, limit: int = 10) -> list[Lesson]:
         return await self._lesson_repo.get_upcoming(limit)

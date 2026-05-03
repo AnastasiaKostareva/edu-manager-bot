@@ -143,8 +143,19 @@ class LessonRepository(ILessonRepository):
         return [self._to_entity(m) for m in models]
 
     async def get_by_user_id(self, user_id: int) -> List[Lesson]:
-        from infrastructure.database.models import Lesson as LessonModel
-        models = await LessonModel.filter(created_by=user_id).order_by("-scheduled_at")
+        from infrastructure.database.models import Lesson as LessonModel, ChatMember
+        from tortoise.expressions import Q
+        from datetime import datetime
+        now = datetime.now()
+
+        chat_ids = await ChatMember.filter(user_id=user_id, is_active=True).values_list("chat_id", flat=True)
+
+        models = await LessonModel.filter(
+            Q(chat_id__in=chat_ids) | Q(created_by=user_id),
+            status="scheduled",
+            scheduled_at__gt=now,
+        ).order_by("scheduled_at")
+
         return [self._to_entity(m) for m in models]
 
     async def get_upcoming(self, limit: int = 10) -> List[Lesson]:

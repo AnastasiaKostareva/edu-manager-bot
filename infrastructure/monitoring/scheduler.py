@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.jobstores.memory import MemoryJobStore
 
 from application.config import get_config
 from infrastructure.database.repositories import ReminderRepository, LessonRepository, ChatRepository, UserRepository
@@ -12,8 +15,19 @@ from domain.entities import LessonStatus, ReminderType
 
 logger = logging.getLogger(__name__)
 
+async def run_send_automatic_reminder_job(chat_id: int, topic: str, minutes: int):
+    scheduler = Scheduler.get_instance()
+    if scheduler:
+        await scheduler.send_automatic_reminder_job(chat_id, topic, minutes)
+
+async def run_ask_completion_job(lesson_id: int):
+    scheduler = Scheduler.get_instance()
+    if scheduler:
+        await scheduler.ask_completion_job(lesson_id)
 
 class Scheduler:
+    _instance: Optional['Scheduler'] = None
+
     def __init__(self, bot: Bot):
         self.bot = bot
         self.reminder_repo = ReminderRepository()
@@ -21,40 +35,112 @@ class Scheduler:
         self.chat_repo = ChatRepository()
         self.user_repo = UserRepository()
         self.lesson_service = LessonService(self.lesson_repo)
-        self._running = False
-        self._task: Optional[asyncio.Task] = None
+
+        config = get_config()
+        db_url = f"postgresql://{config.database.user}:{config.database.password}@{config.database.host}:{config.database.port}/{config.database.database}"
+
+        jobstores = {
+            'default': SQLAlchemyJobStore(url=db_url, tablename='apscheduler_jobs'),
+            'memory': MemoryJobStore()
+        }
+
+        self.scheduler = AsyncIOScheduler(jobstores=jobstores, timezone="UTC")
+        Scheduler._instance = self
+
+    @classmethod
+    def get_instance(cls) -> 'Scheduler':
+        return cls._instance
 
     async def start(self):
-        if self._running:
-            return
-        self._running = True
-        self._task = asyncio.create_task(self._run())
-        logger.info("Scheduler started")
+        # Adding periodical jobs
+        self.scheduler.add_job(
+            self._check_reminders,
+            'interval',
+            seconds=60,
+            id='check_reminders_job',
+            replace_existing=True,
+            jobstore='memory'
+        )
+        self.scheduler.add_job(
+            self._check_lesson_completions,
+            'interval',
+            seconds=60,
+            id='check_lesson_completions_job',
+            replace_existing=True,
+            jobstore='memory'
+        )
+        self.scheduler.add_job(
+            self._check_overdue_lessons,
+            'interval',
+            minutes=15,
+            id='check_overdue_lessons_job',
+            replace_existing=True,
+            jobstore='memory'
+        )
+        # AC: Weekly cron job for checking chats (Monday morning)
+        self.scheduler.add_job(
+            self._check_chats,
+            'cron',
+            day_of_week='mon',
+            hour=9,
+            minute=0,
+            id='check_chats_job',
+            replace_existing=True,
+            jobstore='memory'
+        )
+
+        self.scheduler.start()
+        logger.info("APScheduler started")
 
     async def stop(self):
-        self._running = False
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Scheduler stopped")
+        self.scheduler.shutdown()
+        logger.info("APScheduler stopped")
 
-    async def _run(self):
-        config = get_config()
-        interval = config.scheduler.check_interval_seconds
+    def schedule_reminder(self, job_id: str, run_date: datetime, func, *args, **kwargs):
+        self.scheduler.add_job(
+            func,
+            'date',
+            run_date=run_date,
+            id=job_id,
+            replace_existing=True,
+            args=args,
+            kwargs=kwargs
+        )
 
-        while self._running:
-            try:
-                await self._check_reminders()
-                await self._check_lesson_completions()
-                await self._check_overdue_lessons()
-                await self._check_chats()
-            except Exception as e:
-                logger.error(f"Scheduler error: {e}")
+    def cancel_reminder(self, job_id: str):
+        if self.scheduler.get_job(job_id):
+            self.scheduler.remove_job(job_id)
 
-            await asyncio.sleep(interval)
+    async def send_automatic_reminder_job(self, chat_id: int, topic: str, minutes: int):
+        text = f"Напоминание: Урок \"{topic}\" начнется через {minutes} минут."
+        try:
+            await self.bot.send_message(chat_id, text)
+        except Exception as e:
+            logger.error(f"Failed to send automatic reminder to {chat_id}: {e}")
+
+    async def ask_completion_job(self, lesson_id: int):
+        lesson = await self.lesson_repo.get_by_id(lesson_id)
+        if not lesson or lesson.status not in (LessonStatus.SCHEDULED, LessonStatus.IN_PROGRESS):
+            return
+
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="45", callback_data=f"complete_lesson:{lesson.id}:45"),
+             InlineKeyboardButton(text="60", callback_data=f"complete_lesson:{lesson.id}:60"),
+             InlineKeyboardButton(text="90", callback_data=f"complete_lesson:{lesson.id}:90")],
+            [InlineKeyboardButton(text="Отменен", callback_data=f"complete_lesson:{lesson.id}:cancelled")]
+        ])
+
+        message_text = f"Урок завершен? Укажите длительность:\nТема: {lesson.topic}"
+
+        try:
+            await self.bot.send_message(
+                lesson.created_by,
+                message_text,
+                reply_markup=keyboard
+            )
+        except Exception as e:
+            logger.error(f"Failed to send completion request for lesson {lesson.id}: {e}")
 
     async def _check_reminders(self):
         # Use UTC-aware now to match DB-stored timestamps (Tortoise usually returns tz-aware datetimes).
@@ -99,47 +185,8 @@ class Scheduler:
             await self.bot.send_message(reminder.user_id, reminder.custom_text or "Напоминание")
 
     async def _check_lesson_completions(self):
-        """
-        Проверяет занятия, которые закончились и требуют подтверждения длительности.
-        Отправляет преподавателю инлайн-кнопки для выбора времени.
-        """
-        lessons = await self.lesson_service.get_lessons_needing_completion()
-
-        for lesson in lessons:
-            try:
-                # Проверяем, не отправляли ли мы уже запрос (можно добавить флаг в БД)
-                # Пока упрощенная версия - отправляем каждый раз при проверке
-
-                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⏱ 45 мин", callback_data=f"complete_lesson:{lesson.id}:45")],
-                    [InlineKeyboardButton(text="⏱ 60 мин", callback_data=f"complete_lesson:{lesson.id}:60")],
-                    [InlineKeyboardButton(text="⏱ 90 мин", callback_data=f"complete_lesson:{lesson.id}:90")],
-                    [InlineKeyboardButton(text="✏️ Свой вариант", callback_data=f"complete_lesson:{lesson.id}:custom")],
-                ])
-
-                # Определяем время окончания
-                end_time = lesson.scheduled_end or (lesson.scheduled_at + timedelta(hours=1))
-
-                message_text = (
-                    f"⏰ Занятие завершено!\n\n"
-                    f"📚 Тема: {lesson.topic}\n"
-                    f"🕐 Запланировано: {lesson.scheduled_at.strftime('%d.%m %H:%M')}\n"
-                    f"🕑 Окончание: {end_time.strftime('%H:%M')}\n\n"
-                    f"Пожалуйста, укажите фактическую длительность занятия:"
-                )
-
-                # Отправляем создателю занятия (преподавателю)
-                await self.bot.send_message(
-                    lesson.created_by,
-                    message_text,
-                    reply_markup=keyboard
-                )
-
-                logger.info(f"Sent completion request for lesson {lesson.id} to user {lesson.created_by}")
-
-            except Exception as e:
-                logger.error(f"Failed to send completion request for lesson {lesson.id}: {e}")
+        # Оставлен пустым, так как теперь используются явно запланированные задачи (ask_completion_job)
+        pass
 
     async def _check_overdue_lessons(self):
         """
@@ -184,21 +231,37 @@ class Scheduler:
     async def _check_chats(self):
         chats = await self.chat_repo.get_all_active()
 
+        inactive_chats = []
+        now = datetime.now()
+
         for chat in chats:
             try:
                 last_lesson = await self.lesson_repo.get_last_for_chat(chat.chat_id)
                 upcoming = await self.lesson_repo.get_upcoming_for_chat(chat.chat_id)
 
-                if not last_lesson and not upcoming:
-                    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="Назначить занятие", callback_data="schedule_lesson")]
-                    ])
-
-                    await self.bot.send_message(
-                        chat.chat_id,
-                        "Последнее занятие было давно\nНовое еще не назначено",
-                        reply_markup=keyboard
-                    )
+                if last_lesson and not upcoming:
+                    days_passed = (now - last_lesson.scheduled_at.replace(tzinfo=None)).days
+                    if days_passed > 7:
+                        inactive_chats.append((chat, days_passed))
+                elif not last_lesson and not upcoming:
+                    # Если вообще нет занятий
+                    days_passed = (now - chat.created_at.replace(tzinfo=None)).days
+                    if days_passed > 7:
+                        inactive_chats.append((chat, days_passed))
             except Exception as e:
                 logger.error(f"Failed to check chat {chat.chat_id}: {e}")
+
+        if inactive_chats:
+            admins = await self.user_repo.get_all_admins()
+
+            report_lines = ["⚠️ Отчет по 'зависшим' чатам (>7 дней без уроков):\n"]
+            for chat, days in inactive_chats:
+                report_lines.append(f"• Чат '{chat.chat_title}' (ID: {chat.chat_id}) — нет активности {days} дней")
+
+            alert_text = "\n".join(report_lines)
+
+            for admin in admins:
+                try:
+                    await self.bot.send_message(admin.telegram_id, alert_text)
+                except Exception as e:
+                    logger.error(f"Failed to send inactive chats report to admin {admin.telegram_id}: {e}")

@@ -33,7 +33,7 @@ from infrastructure.database.repositories import (
     ChatMemberRepository,
 )
 from infrastructure.telegram.states import AddLessonSG, AddReminderSG, \
-    RemoveLessonSG, RemoveReminderSG, SqlConsoleSG, CompleteLessonSG, GroupRegSG
+    RemoveLessonSG, RemoveReminderSG, SqlConsoleSG, CompleteLessonSG, GroupRegSG, EditLessonSG
 from infrastructure.telegram.keyboards import main_menu_keyboard, \
     quick_actions_keyboard
 
@@ -684,15 +684,20 @@ async def cmd_add_lesson(message: Message, state: FSMContext):
 
     await ensure_chat_exists(message)
 
-    await message.answer("Введите тему занятия")
+    await _answer_or_edit(message, "Введите тему занятия", state=state)
     await state.set_state(AddLessonSG.topic)
 
 
 @router.message(AddLessonSG.topic)
 async def add_lesson_topic(message: Message, state: FSMContext):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     topic = message.text.strip()
     if not topic:
-        await message.answer("Тема не может быть пустой. Попробуйте ещё раз.")
+        await _answer_or_edit(message, "Тема не может быть пустой. Попробуйте ещё раз.", state=state)
         return
 
     await state.update_data(topic=topic)
@@ -706,10 +711,12 @@ async def add_lesson_topic(message: Message, state: FSMContext):
         ]
     )
 
-    await message.answer(
+    await _answer_or_edit(
+        message,
         "Выберите день, когда хотите провести занятие, или введите дату, "
         "если занятие не в ближайшую неделю (формат дд:мм):",
-        reply_markup=kb
+        reply_markup=kb,
+        state=state
     )
     await state.set_state(AddLessonSG.day_selection)
 
@@ -724,9 +731,11 @@ async def add_lesson_weekday_selected(callback: CallbackQuery, state: FSMContext
     target_date = today + timedelta(days=days_ahead if days_ahead > 0 else 7)
 
     await state.update_data(target_date=target_date)
-    await callback.message.edit_text(
+    await _answer_or_edit(
+        callback.message,
         f"Выбран день: {target_date.strftime('%d.%m.%Y')} ({['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][weekday_index]})\n"
-        f"Теперь введите время занятия (чч:мм):"
+        f"Теперь введите время занятия (чч:мм):",
+        state=state
     )
     await state.set_state(AddLessonSG.time)
     await callback.answer()
@@ -735,6 +744,11 @@ async def add_lesson_weekday_selected(callback: CallbackQuery, state: FSMContext
 @router.message(AddLessonSG.day_selection)
 async def add_lesson_custom_date(message: Message, state: FSMContext):
     """Обработка ручного ввода даты в формате дд:мм"""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     text = message.text.strip()
     try:
         day, month = map(int, text.split(":"))
@@ -744,26 +758,33 @@ async def add_lesson_custom_date(message: Message, state: FSMContext):
         if target_date < now.date():
             target_date = datetime(now.year + 1, month, day).date()
     except (ValueError, TypeError):
-        await message.answer("❌ Неверный формат. Введите дату как дд:мм (например, 15:04).")
+        await _answer_or_edit(message, "❌ Неверный формат. Введите дату как дд:мм (например, 15:04).", state=state)
         return
 
     await state.update_data(target_date=target_date)
-    await message.answer(
+    await _answer_or_edit(
+        message,
         f"Выбрана дата: {target_date.strftime('%d.%m.%Y')}\n"
-        f"Теперь введите время занятия (чч:мм):"
+        f"Теперь введите время занятия (чч:мм):",
+        state=state
     )
     await state.set_state(AddLessonSG.time)
 
 
 @router.message(AddLessonSG.time)
 async def add_lesson_time(message: Message, state: FSMContext):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     text = message.text.strip()
     try:
         hour, minute = map(int, text.split(":"))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError
     except (ValueError, TypeError):
-        await message.answer("❌ Неверный формат времени. Введите как чч:мм (например, 16:30).")
+        await _answer_or_edit(message, "❌ Неверный формат времени. Введите как чч:мм (например, 16:30).", state=state)
         return
 
     data = await state.get_data()
@@ -772,7 +793,7 @@ async def add_lesson_time(message: Message, state: FSMContext):
 
     # Проверяем, что время ещё не прошло (если дата сегодня)
     if scheduled_at <= datetime.now():
-        await message.answer("⚠️ Указанное время уже прошло. Пожалуйста, выберите будущее время.")
+        await _answer_or_edit(message, "⚠️ Указанное время уже прошло. Пожалуйста, выберите будущее время.", state=state)
         return
 
     await state.update_data(scheduled_at=scheduled_at)
@@ -783,12 +804,14 @@ async def add_lesson_time(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🔄 Неверно", callback_data="confirm_lesson:no")],
     ])
 
-    await message.answer(
+    await _answer_or_edit(
+        message,
         f"Проверьте данные:\n\n"
         f"📚 Тема: {topic}\n"
         f"📅 Дата и время: {scheduled_at.strftime('%d.%m.%Y %H:%M')}\n\n"
         f"Всё верно?",
-        reply_markup=confirm_kb
+        reply_markup=confirm_kb,
+        state=state
     )
     await state.set_state(AddLessonSG.confirmation)
 
@@ -799,13 +822,15 @@ async def add_lesson_confirmation(callback: CallbackQuery, state: FSMContext):
 
     if action == "no":
         await state.clear()
-        await callback.message.edit_text("❌ Добавление занятия отменено. Начните заново с /addLesson")
+        await _answer_or_edit(callback.message, "❌ Добавление занятия отменено. Начните заново с /addLesson", state=state)
         await callback.answer()
         return
 
     # Действие "yes"
-    await callback.message.edit_text(
-        "✅ Данные подтверждены. Теперь введите ссылку на занятие (Zoom, Google Meet и т.п.):"
+    await _answer_or_edit(
+        callback.message,
+        "✅ Данные подтверждены. Теперь введите ссылку на занятие (Zoom, Google Meet и т.п.):",
+        state=state
     )
     await state.set_state(AddLessonSG.link)
     await callback.answer()
@@ -813,36 +838,66 @@ async def add_lesson_confirmation(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddLessonSG.link)
 async def add_lesson_link(message: Message, state: FSMContext):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     link = message.text.strip()
     if not link:
-        await message.answer("Ссылка не может быть пустой. Попробуйте ещё раз.")
+        await _answer_or_edit(message, "Ссылка не может быть пустой. Попробуйте ещё раз.", state=state)
+        return
+
+    await state.update_data(link=link)
+    await _answer_or_edit(message, "Укажите плановую длительность занятия (в минутах), например: 60", state=state)
+    await state.set_state(AddLessonSG.duration)
+
+
+@router.message(AddLessonSG.duration)
+async def add_lesson_duration(message: Message, state: FSMContext):
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    try:
+        duration = int(message.text.strip())
+        if duration <= 0:
+            raise ValueError
+    except ValueError:
+        await _answer_or_edit(message, "Пожалуйста, введите корректное число минут (целое число, например: 60).", state=state)
         return
 
     data = await state.get_data()
     topic = data["topic"]
     scheduled_at = data["scheduled_at"]
+    link = data.get("link")
     actor = await get_user_or_reply(message)
+
     if not actor:
         return
 
     try:
-        # Создаём занятие (без repeat_type, можно добавить опционально)
         await lesson_service.schedule(
             actor=actor,
             chat_id=message.chat.id,
             scheduled_at=scheduled_at,
             topic=topic,
             lesson_link=link,
-            repeat_type=None,  # или добавить позже
+            duration_minutes=duration,
+            repeat_type=None,
         )
-        await message.answer(
+        await _answer_or_edit(
+            message,
             f"✅ Занятие назначено!\n\n"
             f"📚 Тема: {topic}\n"
             f"📅 Дата и время: {scheduled_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"🔗 Ссылка: {link}"
+            f"⏱ Длительность: {duration} мин\n"
+            f"🔗 Ссылка: {link}",
+            state=state
         )
     except Exception as e:
-        await message.answer(f"❌ Ошибка при создании занятия: {str(e)}")
+        await _answer_or_edit(message, f"❌ Ошибка при создании занятия: {str(e)}", state=state)
     finally:
         await state.clear()
 
@@ -1267,25 +1322,30 @@ async def sql_query(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("complete_lesson:"))
-async def complete_lesson_callback(callback: CallbackQuery, state: FSMContext):
+async def complete_lesson_process(call: CallbackQuery, state: FSMContext, auth_service: AuthService, lesson_service: LessonService):
+    """
+    Обработка выбора длительности при завершении урока.
+    """
+    # Удалить клавиатуру у сообщения
     try:
-        parts = callback.data.split(":")
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    try:
+        actor = await auth_service.get_current_user(call.from_user.id)
+        parts = call.data.split(":")
         lesson_id = int(parts[1])
         duration_value = parts[2]
-
-        user = await user_repo.get_by_telegram_id(callback.from_user.id)
-        if not user:
-            await callback.answer("Пользователь не найден", show_alert=True)
-            return
 
         if duration_value == "custom":
             await state.update_data(lesson_id=lesson_id)
             await state.set_state(CompleteLessonSG.custom_duration)
-            await callback.message.edit_text(
-                f"{callback.message.text}\n\n"
+            await call.message.edit_text(
+                f"{call.message.text}\n\n"
                 "✏️ Введите длительность в минутах (например: 75):"
             )
-            await callback.answer()
+            await call.answer()
             return
 
         duration_minutes = int(duration_value)
@@ -1293,25 +1353,25 @@ async def complete_lesson_callback(callback: CallbackQuery, state: FSMContext):
         try:
             lesson = await lesson_service.complete_lesson(
                 lesson_id=lesson_id,
-                actor=user,
+                actor=actor,
                 duration_minutes=duration_minutes,
             )
 
-            await callback.message.edit_text(
+            await call.message.edit_text(
                 f"✅ Занятие завершено!\n\n"
                 f"📚 Тема: {lesson.topic}\n"
                 f"⏱ Длительность: {duration_minutes} мин\n"
                 f"🕐 Запланировано: {lesson.scheduled_at.strftime('%d.%m %H:%M')}\n"
                 f"✔️ Статус: Завершено"
             )
-            await callback.answer("Занятие успешно завершено!",
-                                  show_alert=True)
+            await call.answer("Занятие успешно завершено!",
+                              show_alert=True)
 
         except (ValidationException, PermissionDeniedException) as e:
-            await callback.answer(f"Ошибка: {str(e)}", show_alert=True)
+            await call.answer(f"Ошибка: {str(e)}", show_alert=True)
 
     except Exception as e:
-        await callback.answer(f"Произошла ошибка: {str(e)}", show_alert=True)
+        await call.answer(f"Произошла ошибка: {str(e)}", show_alert=True)
 
 
 @router.message(CompleteLessonSG.custom_duration)
@@ -1369,6 +1429,93 @@ async def complete_lesson_custom_duration(message: Message, state: FSMContext):
         await message.answer(f"❌ Произошла ошибка: {str(e)}")
     finally:
         await state.clear()
+
+
+@router.message(Command("edit_lesson"))
+async def edit_lesson_start(message: Message, state: FSMContext):
+    user = await get_user_or_reply(message)
+    if not user: return
+    try:
+        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER])
+    except PermissionDeniedException:
+        await message.answer("Нет прав для редактирования уроков.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Укажите ID урока. Пример: /edit_lesson 123")
+        return
+
+    try:
+        lesson_id = int(parts[1])
+        lesson = await lesson_service.get(lesson_id)
+        if not lesson:
+            await message.answer("Урок не найден.")
+            return
+
+        if user.role == UserRole.TEACHER and lesson.created_by != user.telegram_id:
+            await message.answer("Вы можете редактировать только свои уроки.")
+            return
+
+        await state.update_data(lesson_id=lesson.id)
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Статус", callback_data="edit_lesson_field:status"),
+             InlineKeyboardButton(text="Длительность", callback_data="edit_lesson_field:duration_minutes")]
+        ])
+        await message.answer(f"Что хотите изменить у урока \"{lesson.topic}\"?", reply_markup=keyboard)
+        await state.set_state(EditLessonSG.field)
+    except ValueError:
+        await message.answer("ID урока должен быть числом.")
+    except Exception as e:
+        await message.answer(f"Ошибка: {str(e)}")
+
+@router.callback_query(EditLessonSG.field, F.data.startswith("edit_lesson_field:"))
+async def edit_lesson_field(call: CallbackQuery, state: FSMContext):
+    field = call.data.split(":")[1]
+    await state.update_data(field=field)
+
+    if field == "status":
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="SCHEDULED", callback_data="edit_lesson_val:SCHEDULED"),
+             InlineKeyboardButton(text="COMPLETED", callback_data="edit_lesson_val:COMPLETED")],
+            [InlineKeyboardButton(text="CANCELED", callback_data="edit_lesson_val:CANCELED"),
+             InlineKeyboardButton(text="OVERDUE", callback_data="edit_lesson_val:OVERDUE")]
+        ])
+        await call.message.edit_text("Выберите новый статус:", reply_markup=keyboard)
+    elif field == "duration_minutes":
+        await call.message.edit_text("Введите новую длительность в минутах:")
+        await state.set_state(EditLessonSG.new_duration)
+
+@router.callback_query(EditLessonSG.field, F.data.startswith("edit_lesson_val:"))
+async def edit_lesson_status_val(call: CallbackQuery, state: FSMContext):
+    new_val = call.data.split(":")[1]
+    data = await state.get_data()
+    lesson_id = data.get("lesson_id")
+
+    lesson = await lesson_service.get(lesson_id)
+    if lesson:
+        lesson.status = LessonStatus(new_val)
+        await lesson_repo.update(lesson)
+        await call.message.edit_text(f"Урок {lesson_id} обновлен, статус: {new_val}.")
+    await state.clear()
+
+@router.message(EditLessonSG.new_duration)
+async def edit_lesson_duration_val(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Пожалуйста, введите число.")
+        return
+
+    data = await state.get_data()
+    lesson_id = data.get("lesson_id")
+
+    lesson = await lesson_service.get(lesson_id)
+    if lesson:
+        lesson.duration_minutes = int(message.text)
+        await lesson_repo.update(lesson)
+        await message.answer(f"Урок {lesson_id} обновлен, длительность: {message.text} минут.")
+
+    await state.clear()
 
 # ==========================================
 # КОМАНДЫ /commands и /help

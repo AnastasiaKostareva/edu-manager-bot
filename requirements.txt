@@ -7,3 +7,6 @@ PyYAML==6.0.3
 tortoise==0.1.1
 aerich==0.7.2
 asyncpg==0.29.0
+apscheduler==3.10.4
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
