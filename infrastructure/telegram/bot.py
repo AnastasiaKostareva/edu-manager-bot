@@ -1,8 +1,13 @@
-
 import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
+
+try:
+    from aiogram.fsm.storage.redis import RedisStorage
+except Exception:  # pragma: no cover - опциональная зависимость
+    RedisStorage = None
+
 from dotenv import load_dotenv
 
 from application.config import load_config
@@ -17,7 +22,13 @@ def build_bot_and_dispatcher() -> tuple[Bot, Dispatcher]:
     if not token_bot:
         raise ValueError("TOKEN_BOT не найден в appsettings.yaml или .env файле")
 
-    storage = MemoryStorage()
+    redis_url = os.getenv("REDIS_URL")
+    storage = (
+        RedisStorage.from_url(redis_url)
+        if redis_url and RedisStorage is not None
+        else MemoryStorage()
+    )
+
     bot = Bot(token=token_bot)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)

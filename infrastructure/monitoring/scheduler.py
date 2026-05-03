@@ -57,6 +57,7 @@ class Scheduler:
             await asyncio.sleep(interval)
 
     async def _check_reminders(self):
+        # Use UTC-aware now to match DB-stored timestamps (Tortoise usually returns tz-aware datetimes).
         now = datetime.now(timezone.utc)
         pending = await self.reminder_repo.get_pending(now)
 
@@ -73,7 +74,12 @@ class Scheduler:
             if not lesson:
                 return
 
-            time_diff = lesson.scheduled_at - datetime.now(timezone.utc)
+            # Ensure we compute difference with datetimes having the same tzinfo.
+            if lesson.scheduled_at.tzinfo is not None:
+                now = datetime.now(timezone.utc)
+            else:
+                now = datetime.now()
+            time_diff = lesson.scheduled_at - now
             minutes = int(time_diff.total_seconds() / 60)
 
             if reminder.reminder_type == ReminderType.LESSON:

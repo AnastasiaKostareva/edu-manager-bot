@@ -26,11 +26,19 @@ class ReminderService:
         time_value: str,
         custom_text: str | None = None,
     ) -> Reminder:
-        reminder_time = (
-            ReminderTime.from_custom_format(time_value)
-            if ":" in time_value
-            else ReminderTime.from_string(time_value)
-        )
+        normalized_time = (time_value or "").strip().lower()
+        if not normalized_time:
+            raise ValidationException("Invalid reminder time")
+
+        try:
+            reminder_time = (
+                ReminderTime.from_custom_format(normalized_time)
+                if ":" in normalized_time
+                else ReminderTime.from_string(normalized_time)
+            )
+        except ValueError as exc:
+            raise ValidationException("Invalid reminder time") from exc
+
         if reminder_time.minutes <= 0:
             raise ValidationException("Invalid reminder time")
 
@@ -39,10 +47,16 @@ class ReminderService:
             raise ValidationException("Lesson not found")
 
         remind_at = lesson.scheduled_at - timedelta(minutes=reminder_time.minutes)
-        if remind_at <= datetime.now(timezone.utc):
+        if remind_at.tzinfo is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.now()
+
+        if remind_at <= now:
             raise ValidationException("Reminder time is in the past")
 
         reminder = Reminder(
+            id=0,
             user_id=target_user_id,
             lesson_id=lesson_id,
             reminder_type=reminder_type,

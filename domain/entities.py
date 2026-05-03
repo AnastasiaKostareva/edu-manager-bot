@@ -42,6 +42,55 @@ class ReminderTime(str, Enum):
     TWELVE_HOURS = "12h"
     ONE_DAY = "1d"
 
+    @property
+    def minutes(self) -> int:
+        mapping = {
+            ReminderTime.FIVE_MIN: 5,
+            ReminderTime.TEN_MIN: 10,
+            ReminderTime.FIFTEEN_MIN: 15,
+            ReminderTime.THIRTY_MIN: 30,
+            ReminderTime.ONE_HOUR: 60,
+            ReminderTime.TWO_HOURS: 120,
+            ReminderTime.FOUR_HOURS: 240,
+            ReminderTime.EIGHT_HOURS: 480,
+            ReminderTime.TWELVE_HOURS: 720,
+            ReminderTime.ONE_DAY: 1440,
+        }
+        return mapping[self]
+
+    @classmethod
+    def from_string(cls, value: str) -> "ReminderTime":
+        normalized = (value or "").strip().lower()
+        return cls(normalized)
+
+    @classmethod
+    def from_custom_format(cls, value: str) -> "ParsedReminderTime":
+        normalized = (value or "").strip().lower()
+        parts = [p.strip() for p in normalized.split(":") if p.strip() != ""]
+        if len(parts) not in (2, 3):
+            raise ValueError("Invalid custom reminder format")
+        try:
+            numbers = [int(p) for p in parts]
+        except ValueError as exc:
+            raise ValueError("Invalid custom reminder format") from exc
+
+        if len(numbers) == 2:
+            hours, minutes = numbers
+            days = 0
+        else:
+            days, hours, minutes = numbers
+
+        if days < 0 or hours < 0 or minutes < 0:
+            raise ValueError("Invalid custom reminder format")
+
+        total_minutes = (days * 24 * 60) + (hours * 60) + minutes
+        return ParsedReminderTime(minutes=total_minutes)
+
+
+@dataclass(frozen=True)
+class ParsedReminderTime:
+    minutes: int
+
 @dataclass
 class User:
     telegram_id: int

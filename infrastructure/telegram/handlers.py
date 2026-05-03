@@ -161,6 +161,176 @@ def _build_confirmation_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _build_reminder_time_keyboard(payload: dict[str, str] | None = None) -> InlineKeyboardMarkup:
+    options = ["5m", "10m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d"]
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    suffix = ""
+    if payload:
+        parts = []
+        for key in ("t", "s", "l", "tp"):
+            value = payload.get(key)
+            if value is not None and value != "":
+                parts.append(f"{key}={value}")
+        if parts:
+            suffix = "|" + ",".join(parts)
+
+    for idx, opt in enumerate(options, start=1):
+        row.append(InlineKeyboardButton(text=opt, callback_data=f"rem_time:{opt}{suffix}"))
+        if idx % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    rows.append([InlineKeyboardButton(text="Вручную", callback_data=f"rem_time:custom{suffix}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _reminder_payload_from_state(data: dict) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    if data.get("target"):
+        payload["t"] = str(data["target"])
+    if data.get("student_id"):
+        payload["s"] = str(data["student_id"])
+    if data.get("lesson_id"):
+        payload["l"] = str(data["lesson_id"])
+    if data.get("topic"):
+        payload["tp"] = str(data["topic"])
+    return payload
+
+
+def _parse_reminder_time_payload(raw: str) -> tuple[str, dict[str, str]]:
+    if "|" not in raw:
+        return raw, {}
+    value, payload_raw = raw.split("|", 1)
+    payload: dict[str, str] = {}
+    for part in payload_raw.split(","):
+        if "=" in part:
+            key, val = part.split("=", 1)
+            payload[key] = val
+    return value, payload
+
+
+async def _resolve_actor_from_user(user) -> User:
+    existing = await user_repo.get_by_telegram_id(user.id)
+    if existing:
+        return existing
+
+    created = User(
+        telegram_id=user.id,
+        username=user.username or "",
+        full_name=user.full_name,
+        role=get_user_role(user.id),
+        is_active=True,
+    )
+    return await user_repo.create(created)
+
+
+async def _answer_or_edit(
+    message: Message,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    state: FSMContext | None = None,
+) -> None:
+    """Редактирует последний бот-сообщение в диалоге если возможно, иначе отправляет новое.
+
+    Логика:
+    - Если переданный message — это сообщение бота (callback.message), пробуем его отредактировать.
+    - Иначе, если в FSM state сохранено last_bot_message, пробуем отредактировать его.
+    - В противном случае отправляем новое сообщение и сохраняем его id в state (если state передан).
+    """
+    bot = message.bot
+
+    # Если передали сообщение бота — редактируем его
+    if getattr(message, "from_user", None) and getattr(message.from_user, "is_bot", False):
+        try:
+            await message.edit_text(text, reply_markup=reply_markup)
+            # Сохраняем ссылку на редактируемое сообщение в state (если есть)
+            if state is not None:
+                await state.update_data(last_bot_message={"chat_id": message.chat.id, "message_id": message.message_id})
+            return
+        except Exception:
+            pass
+
+    # Пытаемся редактировать последнее бот-сообщение из state
+    if state is not None:
+        data = await state.get_data()
+        last = data.get("last_bot_message")
+        if isinstance(last, dict) and last.get("chat_id") and last.get("message_id"):
+            try:
+                await bot.edit_message_text(
+                    text=text,
+                    chat_id=last["chat_id"],
+                    message_id=last["message_id"],
+                    reply_markup=reply_markup,
+                )
+                return
+            except Exception:
+                # Если редактирование по сохранённому id не удалось — продолжим и отправим новое сообщение
+                pass
+
+    # Фоллбэк: отправляем новое сообщение и сохраняем его id в state
+    sent = await message.answer(text, reply_markup=reply_markup)
+    if state is not None:
+        try:
+            await state.update_data(last_bot_message={"chat_id": sent.chat.id, "message_id": sent.message_id})
+        except Exception:
+            pass
+
+
+async def _create_reminder_from_state(
+    message: Message,
+    state: FSMContext,
+    actor: User,
+    time_val: str,
+) -> None:
+    data = await state.get_data()
+
+    target_val = data.get("target")
+    student_id = data.get("student_id")
+    lesson_id = data.get("lesson_id")
+    topic = data.get("topic")
+
+    target_id = actor.telegram_id if target_val == "self" else student_id
+
+    if target_id is None or not lesson_id or not topic:
+        await _answer_or_edit(
+            message,
+            f"Похоже, сценарий напоминания прервался или не хватает данных.\n\n"
+            f"Отладка состояния:\n"
+            f"• Цель (target): {target_val}\n"
+            f"• ID студента (student_id): {student_id}\n"
+            f"• ID занятия (lesson_id): {lesson_id}\n"
+            f"• Тема (topic): {topic}\n"
+            f"• Вычисленный target_id: {target_id}\n\n"
+            f"Пожалуйста, начните заново с /addReminder.",
+            state=state,
+        )
+        await state.clear()
+        return
+
+    normalized_time = (time_val or "").strip().split()[0].lower()
+    if not normalized_time:
+        await _answer_or_edit(message, "Введите время в формате 5m/10m/1h или dd:hh:mm.", state=state)
+        return
+
+    try:
+        await reminder_service.create_for_lesson(
+            actor=actor,
+            target_user_id=int(target_id),
+            lesson_id=int(lesson_id),
+            reminder_type=ReminderType(topic),
+            time_value=normalized_time,
+            custom_text=data.get("custom_text"),
+        )
+        await _answer_or_edit(message, "Напоминание успешно создано!", state=state)
+    except Exception as e:
+        await _answer_or_edit(message, f"Ошибка при создании: {str(e)}", state=state)
+    finally:
+        await state.clear()
+
+
 # ==========================================
 # ЛОГИКА ПРИВАТНОГО ЧАТА
 # ==========================================
@@ -731,7 +901,7 @@ async def reminder_target(callback: CallbackQuery, state: FSMContext):
     if target == "student":
         students = await user_repo.get_all_students()
         if not students:
-            await callback.message.answer("Нет студентов")
+            await _answer_or_edit(callback.message, "Нет студентов", state=state)
             await state.clear()
             await callback.answer()
             return
@@ -743,14 +913,14 @@ async def reminder_target(callback: CallbackQuery, state: FSMContext):
                 for s in students[:10]
             ]
         )
-        await callback.message.answer("Выберите студента:", reply_markup=kb)
+        await _answer_or_edit(callback.message, "Выберите студента:", reply_markup=kb, state=state)
         await state.set_state(AddReminderSG.student)
         await callback.answer()
         return
 
     lessons = await lesson_service.upcoming(10)
     if not lessons:
-        await callback.message.answer("Сейчас нет назначенных занятий")
+        await _answer_or_edit(callback.message, "Сейчас нет назначенных занятий", state=state)
         await state.clear()
         await callback.answer()
         return
@@ -766,7 +936,7 @@ async def reminder_target(callback: CallbackQuery, state: FSMContext):
             for l in lessons[:10]
         ]
     )
-    await callback.message.answer("Выберите занятие:", reply_markup=kb)
+    await _answer_or_edit(callback.message, "Выберите занятие:", reply_markup=kb, state=state)
     await state.set_state(AddReminderSG.lesson)
     await callback.answer()
 
@@ -778,7 +948,7 @@ async def reminder_student(callback: CallbackQuery, state: FSMContext):
 
     lessons = await lesson_service.upcoming(10)
     if not lessons:
-        await callback.message.answer("Сейчас нет назначенных занятий")
+        await _answer_or_edit(callback.message, "Сейчас нет назначенных занятий", state=state)
         await state.clear()
         await callback.answer()
         return
@@ -794,7 +964,7 @@ async def reminder_student(callback: CallbackQuery, state: FSMContext):
             for l in lessons[:10]
         ]
     )
-    await callback.message.answer("Выберите занятие:", reply_markup=kb)
+    await _answer_or_edit(callback.message, "Выберите занятие:", reply_markup=kb, state=state)
     await state.set_state(AddReminderSG.lesson)
     await callback.answer()
 
@@ -813,7 +983,7 @@ async def reminder_lesson(callback: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="Свое", callback_data="topic:custom")],
         ]
     )
-    await callback.message.answer("Выберите тип напоминания:", reply_markup=kb)
+    await _answer_or_edit(callback.message, "Выберите тип напоминания:", reply_markup=kb, state=state)
     await state.set_state(AddReminderSG.topic)
     await callback.answer()
 
@@ -824,52 +994,73 @@ async def reminder_topic(callback: CallbackQuery, state: FSMContext):
     await state.update_data(topic=topic)
 
     if topic == "custom":
-        await callback.message.answer("Напишите текст напоминания")
+        await _answer_or_edit(callback.message, "Напишите текст напоминания", state=state)
         await state.set_state(AddReminderSG.custom_text)
         await callback.answer()
         return
 
-    await callback.message.answer(
-        "Выберите время: 5m/10m/15m/30m/1h/2h/4h/8h/12h/1d или custom")
+    data = await state.get_data()
+    await _answer_or_edit(
+        callback.message,
+        "Выберите время кнопками ниже или нажмите 'Вручную' для ввода.",
+        reply_markup=_build_reminder_time_keyboard(_reminder_payload_from_state(data)),
+        state=state,
+    )
     await state.set_state(AddReminderSG.time)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rem_time:"), AddReminderSG.time)
+async def reminder_time_quick_select(callback: CallbackQuery, state: FSMContext):
+    raw = callback.data.split(":", 1)[1]
+    value, payload = _parse_reminder_time_payload(raw)
+    if payload:
+        update_data: dict = {}
+        if payload.get("t"):
+            update_data["target"] = payload["t"]
+        if payload.get("s"):
+            update_data["student_id"] = int(payload["s"])
+        if payload.get("l"):
+            update_data["lesson_id"] = int(payload["l"])
+        if payload.get("tp"):
+            update_data["topic"] = payload["tp"]
+        if update_data:
+            await state.update_data(**update_data)
+
+    if value == "custom":
+        await _answer_or_edit(callback.message, "Введите время (5m/10m/1h или dd:hh:mm):", state=state)
+        await state.set_state(AddReminderSG.custom_time)
+        await callback.answer()
+        return
+
+    actor = await _resolve_actor_from_user(callback.from_user)
+    await _create_reminder_from_state(callback.message, state, actor, value)
     await callback.answer()
 
 
 @router.message(AddReminderSG.custom_text)
 async def reminder_custom_text(message: Message, state: FSMContext):
     await state.update_data(custom_text=message.text)
-    await message.answer(
-        "Выберите время: 5m/10m/15m/30m/1h/2h/4h/8h/12h/1d или dd:hh:mm")
+    data = await state.get_data()
+    await _answer_or_edit(
+        message,
+        "Выберите время кнопками ниже или нажмите 'Вручную' для ввода.",
+        reply_markup=_build_reminder_time_keyboard(_reminder_payload_from_state(data)),
+        state=state,
+    )
     await state.set_state(AddReminderSG.time)
+
+
+@router.message(AddReminderSG.custom_time)
+async def reminder_time_manual(message: Message, state: FSMContext):
+    actor, _ = await get_or_create_user(message)
+    await _create_reminder_from_state(message, state, actor, message.text)
 
 
 @router.message(AddReminderSG.time)
 async def reminder_time(message: Message, state: FSMContext):
-    data = await state.get_data()
-    time_val = (message.text or "").strip()
-
     actor, _ = await get_or_create_user(message)
-    target_id = actor.telegram_id if data.get(
-        "target") == "self" else data.get("student_id")
-    if not target_id:
-        await message.answer("Цель напоминания не выбрана")
-        await state.clear()
-        return
-
-    try:
-        await reminder_service.create_for_lesson(
-            actor=actor,
-            target_user_id=int(target_id),
-            lesson_id=int(data["lesson_id"]),
-            reminder_type=ReminderType(data["topic"]),
-            time_value=time_val,
-            custom_text=data.get("custom_text"),
-        )
-        await message.answer("Напоминание создано")
-    except Exception as e:
-        await message.answer(f"Ошибка: {str(e)}")
-    finally:
-        await state.clear()
+    await _create_reminder_from_state(message, state, actor, message.text)
 
 
 @router.message(Command("removeReminder"))
