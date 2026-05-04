@@ -157,11 +157,12 @@ async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
     else:
         from domain.entities import User
         try:
-            await message.answer(
-                "🚫 <b>Вас нет в базе данных.</b>\n\n"
-                "Обратитесь к преподавателю, чтобы он зарегистрировал вас в групповом чате или вручную."
-            )
-            return
+            linked_user = await user_repo.create(User(
+                username=clean_username,
+                full_name=data["temp_name"],
+                role=role,
+                is_active=False,
+            ))
         except Exception as e:
             await callback.message.edit_text(f"❌ Ошибка при сохранении: {e}")
             await state.set_state(GroupRegSG.waiting_for_username)

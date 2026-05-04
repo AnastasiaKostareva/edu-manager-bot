@@ -66,7 +66,7 @@ async def get_or_create_user(event: Message | CallbackQuery) -> tuple[
         logger.info(f"IIIIIIIIIIIIIIIIIIIIIIIIIIIID:{user_id}")
         await user_repo.update(user_by_name)
         return user_by_name, False
-
+    
     new_user = User(
         telegram_id=user_id,
         username=username,

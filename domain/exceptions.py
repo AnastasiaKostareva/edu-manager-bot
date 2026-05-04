@@ -9,7 +9,8 @@ class UserNotFoundException(DomainException):
 class UserAlreadyExistsException(DomainException):
     pass
 
-
+class UserNotRegisteredException(DomainException):
+    pass
 class LessonNotFoundException(DomainException):
     pass
 

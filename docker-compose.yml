@@ -25,10 +25,10 @@ services:
       BOT_TOKEN: ${BOT_TOKEN}
       DB_HOST: db
       DB_USER: edu_user
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: edu_manager
       ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
-      PGPASSWORD: ${DB_PASSWORD}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ./appsettings.yaml:/app/appsettings.yaml
     restart: unless-stopped

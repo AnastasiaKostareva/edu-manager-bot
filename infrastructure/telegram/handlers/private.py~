@@ -21,7 +21,7 @@ from application.use_cases.lesson import LessonService
 from application.use_cases.reminder import ReminderService
 from application.use_cases.statistics import StatisticsService
 from domain.entities import ReminderType, UserRole
-from domain.exceptions import PermissionDeniedException, ValidationException, UserNotRegisteredException
+from domain.exceptions import PermissionDeniedException, ValidationException
 from infrastructure.database.repositories import (
     LessonRepository, ReminderRepository, UserRepository,
     ChatRepository, ChatMemberRepository,
@@ -65,14 +65,6 @@ _PRIVATE = F.chat.type == "private"
 @router.message(_PRIVATE, CommandStart(), StateFilter("*"))
 async def pm_start(message: Message, state: FSMContext):
     await state.clear()
-    try:
-        user, _ = await get_or_create_user(message)
-    except UserNotRegisteredException:
-        await message.answer(
-            "🚫 <b>Вас нет в базе данных.</b>\n\n"
-            "Обратитесь к преподавателю, чтобы он зарегистрировал вас в групповом чате или вручную."
-        )
-        return
     user, _ = await get_or_create_user(message)
     admin_contact = await get_admin_contact_username()
 

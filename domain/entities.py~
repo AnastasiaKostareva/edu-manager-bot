@@ -102,9 +102,10 @@ class ParsedReminderTime:
 
 @dataclass
 class User:
+    telegram_id: int
     username: str
     role: UserRole
-    telegram_id: int = None
+    id: int = None
     full_name: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool = True

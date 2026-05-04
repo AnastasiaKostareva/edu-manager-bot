@@ -59,30 +59,24 @@ class Chat(models.Model):
 
 class ChatMember(models.Model):
     """
-    Таблица chat_members
-    Составной PK (chat_id, user_id). 
+    Таблица chat_members (без привязки к профилю уведомлений)
     """
     id = fields.IntField(pk=True)
     chat = fields.ForeignKeyField(
-        "models.Chat", 
-        related_name="members", 
+        "models.Chat",
+        related_name="members",
         on_delete=fields.CASCADE,
         source_field="chat_id",
         to_field="chat_id"
     )
     user = fields.ForeignKeyField(
-        "models.User", 
-        related_name="chat_memberships", 
+        "models.User",
+        related_name="chat_memberships",
         on_delete=fields.CASCADE,
         source_field="user_id",
         to_field="telegram_id"
     )
-    profile = fields.ForeignKeyField(
-        "models.NotificationProfile", 
-        related_name="chat_memberships",
-        source_field="profile_id",
-        to_field="id"
-    )
+    # 👇 СТРОКУ profile УДАЛЯЕМ ПОЛНОСТЬЮ
     joined_at = fields.DatetimeField(auto_now_add=True)
     is_active = fields.BooleanField(default=True)
 
@@ -210,3 +204,33 @@ class Reminder(models.Model):
 
     def __str__(self):
         return f"Reminder({self.id}, {self.reminder_type})"
+
+class UserNotificationProfile(models.Model):
+    """
+    Промежуточная таблица: какие профили уведомлений привязаны к пользователю
+    """
+    id = fields.IntField(pk=True)
+    user = fields.ForeignKeyField(
+        "models.User",
+        related_name="notification_profiles",
+        on_delete=fields.CASCADE,
+        source_field="user_id",
+        to_field="telegram_id"
+    )
+    profile = fields.ForeignKeyField(
+        "models.NotificationProfile",
+        related_name="user_assignments",
+        on_delete=fields.CASCADE,
+        source_field="profile_id",
+        to_field="id"
+    )
+    is_default = fields.BooleanField(default=False, null=False)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "user_notification_profiles"
+        unique_together = ("user_id", "profile_id")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"UserProfile({self.user_id} -> {self.profile_id})"

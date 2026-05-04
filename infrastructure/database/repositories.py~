@@ -46,7 +46,6 @@ class UserRepository(IUserRepository):
     async def create(self, user: User) -> User:
         from infrastructure.database.models import User as UserModel
         model = await UserModel.create(
-            telegram_id=user.telegram_id,
             username=user.username,
             full_name=user.full_name,
             phone=user.phone,
@@ -55,10 +54,19 @@ class UserRepository(IUserRepository):
         )
         return user
 
-    async def update(self, user: User) -> User:
+    async def update(self, user: User, by_id: bool = True) -> User:
         from infrastructure.database.models import User as UserModel
-        await UserModel.filter(telegram_id=user.telegram_id).update(
-            username=user.username,
+        if by_id:
+            await UserModel.filter(telegram_id=user.telegram_id).update(
+                username=user.username,
+                full_name=user.full_name,
+                phone=user.phone,
+                role=user.role.value,
+                is_active=user.is_active,
+            )
+            return user
+        await UserModel.filter(username=user.username).update(
+            telegram_id=user.telegram_id,
             full_name=user.full_name,
             phone=user.phone,
             role=user.role.value,
