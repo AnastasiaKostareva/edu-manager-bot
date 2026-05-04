@@ -8,8 +8,7 @@ def main_menu_keyboard(role: UserRole,
                        is_group: bool = False) -> ReplyKeyboardMarkup:
     """Главное меню (Reply-кнопки). В групповом чате убираем кнопки напоминаний."""
     rows: list[list[KeyboardButton]] = [
-        [KeyboardButton(text="Мои занятия"),
-         KeyboardButton(text="Статистика")]
+        [KeyboardButton(text="Мои занятия")]
     ]
 
     if not is_group:
@@ -19,8 +18,8 @@ def main_menu_keyboard(role: UserRole,
         rows.append([KeyboardButton(text="Добавить занятие"),
                      KeyboardButton(text="Удалить занятие")])
 
-    if role == UserRole.OWNER:
-        rows.append([KeyboardButton(text="SQL консоль")])
+    if role == UserRole.OWNER and not is_group:
+        rows.append([KeyboardButton(text="SQL консоль"),KeyboardButton(text="Статистика")])
 
     return ReplyKeyboardMarkup(
         keyboard=rows,

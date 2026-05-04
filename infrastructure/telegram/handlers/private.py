@@ -14,7 +14,7 @@ from aiogram.types import (
     CallbackQuery, Message,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
-
+from infrastructure.database.models import Reminder
 from application.use_cases.analytics import AnalyticsService
 from application.use_cases.auth import AuthService
 from application.use_cases.lesson import LessonService
@@ -161,6 +161,10 @@ async def pm_admin_find_user(message: Message, state: FSMContext):
 @router.message(StateFilter("*"), F.text == "Добавить занятие")
 @router.message(StateFilter("*"), Command("addLesson"))
 async def cmd_add_lesson(message: Message, state: FSMContext):
+    if message.chat.type == "private":
+        await message.answer(
+            "⚠️ Эта команда доступна только в групповых чатах.")
+        return
     await state.clear()
     user, _ = await get_or_create_user(message)
     try:
@@ -339,18 +343,66 @@ async def add_lesson_link(message: Message, state: FSMContext):
         f"🔗 Ссылка: {link}"
     )
 
-    # Авто-напоминание запускаем ТОЛЬКО в личном чате
-    if message.chat.type == "private":
-        await state.update_data(lesson_id=lesson.id)
-        kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Себе", callback_data="target:self")],
-            [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
-        ]))
-        await message.answer("🔔 Настроим напоминание для этого занятия. Кому?", reply_markup=kb)
-        await state.set_state(AddReminderSG.target)
-    else:
+    kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="15 мин до",
+                              callback_data="chat_rem:15")],
+        [InlineKeyboardButton(text="1 час до",
+                              callback_data="chat_rem:60")],
+        [InlineKeyboardButton(text="Пропустить",
+                              callback_data="chat_rem:skip")],
+    ]))
+    await state.update_data(lesson_id=lesson.id)
+    # 👇 Теперь используем состояние из AddLessonSG
+    await state.set_state(AddLessonSG.chat_reminder)
+    await message.answer(" Создать напоминание для всего чата?",reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("chat_rem:"),
+                       AddLessonSG.chat_reminder)
+async def process_chat_reminder(callback: CallbackQuery, state: FSMContext):
+    action = callback.data.split(":")[1]
+
+    if action == "skip":
+        await callback.message.edit_text("Напоминание для чата пропущено.")
         await state.clear()
-        await message.answer("💡 Чтобы настроить напоминание — напишите боту в личные сообщения.")
+        await callback.answer()
+        return
+
+    minutes = int(action)
+    data = await state.get_data()
+    lesson_id = data.get("lesson_id")
+    lesson = await lesson_repo.get_by_id(lesson_id)
+
+    if not lesson:
+        await callback.message.edit_text("Ошибка: занятие не найдено.")
+        await state.clear()
+        return
+
+    remind_at = lesson.scheduled_at - timedelta(minutes=minutes)
+    if remind_at < datetime.now(MSK):
+        await callback.message.edit_text(
+            "⚠️ Это время уже прошло. Напоминание не создано.")
+        await state.clear()
+        await callback.answer()
+        return
+
+    # Создаём напоминание с новым полем chat_id
+    await reminder_repo.create(Reminder(
+        user_id=None,  # Для чата пользователь не нужен
+        chat_id=callback.message.chat.id,  # Адресат — группа
+        lesson_id=lesson_id,
+        reminder_type=ReminderType.LESSON,
+        remind_at=remind_at,
+        custom_text=None,
+        creator_id=callback.from_user.id,
+        is_sent=False,
+    ))
+
+    await callback.message.edit_text(
+        f"✅ Напоминание для чата создано!\n⏰ Напомню за {minutes} мин до начала."
+    )
+    await state.clear()
+    await callback.answer()
 
 
 # ─────────────────────────────────────────
@@ -360,6 +412,16 @@ async def add_lesson_link(message: Message, state: FSMContext):
 @router.message(StateFilter("*"), F.text == "Удалить занятие")
 @router.message(Command("removeLesson"))
 async def cmd_remove_lesson(message: Message, state: FSMContext):
+    if message.chat.type == "private":
+        await message.answer(
+            "⚠️ Эта команда доступна только в групповых чатах.")
+        return
+    user, _ = await get_or_create_user(message)
+    try:
+        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER])
+    except PermissionDeniedException:
+        await message.answer("У вас нет доступа к этой команде.")
+        return
     await state.clear()
     lessons = await lesson_service.list_for_chat(message.chat.id)
     if not lessons:
@@ -830,50 +892,6 @@ async def cmd_help(message: Message):
         "/cancel — отменить текущее действие\n"
         "/help — эта справка"
     )
-
-
-# ─────────────────────────────────────────
-# Завершение занятия (из уведомления планировщика)
-# ─────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("complete_lesson:"))
-async def complete_lesson_cb(callback: CallbackQuery, state: FSMContext):
-    try:
-        parts = callback.data.split(":")
-        lesson_id = int(parts[1])
-        duration_value = parts[2]
-
-        user = await user_repo.get_by_telegram_id(callback.from_user.id)
-        if not user:
-            await callback.answer("Пользователь не найден.", show_alert=True)
-            return
-
-        if duration_value == "custom":
-            await state.update_data(lesson_id=lesson_id)
-            await state.set_state(CompleteLessonSG.custom_duration)
-            await callback.message.edit_text(
-                f"{callback.message.text}\n\n✏️ Введите длительность в минутах (например: 75):"
-            )
-            await callback.answer()
-            return
-
-        lesson = await lesson_service.complete_lesson(
-            lesson_id=lesson_id,
-            actor=user,
-            duration_minutes=int(duration_value),
-        )
-        await callback.message.edit_text(
-            f"✅ Занятие завершено!\n\n"
-            f"📚 Тема: {lesson.topic}\n"
-            f"⏱ Длительность: {duration_value} мин\n"
-            f"✔️ Статус: Завершено"
-        )
-        await callback.answer("Занятие завершено!", show_alert=True)
-
-    except (ValidationException, PermissionDeniedException) as e:
-        await callback.answer(f"Ошибка: {str(e)}", show_alert=True)
-    except Exception as e:
-        await callback.answer(f"Произошла ошибка: {str(e)}", show_alert=True)
 
 
 @router.message(CompleteLessonSG.custom_duration)

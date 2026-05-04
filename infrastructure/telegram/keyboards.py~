@@ -19,14 +19,22 @@ def main_menu_keyboard(role: UserRole,
         rows.append([KeyboardButton(text="Добавить занятие"),
                      KeyboardButton(text="Удалить занятие")])
 
-    if role == UserRole.OWNER:
+    if role == UserRole.OWNER and not is_group:
         rows.append([KeyboardButton(text="SQL консоль")])
 
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
-        input_field_placeholder="Выберите действие",
+        input_field_placeholder="Выберите действие или /cancel для отмены",
     )
+
+
+def add_cancel_button(keyboard: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
+    """Добавляет кнопку 'Отмена' в конец инлайн-клавиатуры."""
+    cancel_btn = [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_action")]
+    # Если последняя строка уже содержит кнопки, добавим отмену новой строкой
+    keyboard.inline_keyboard.append(cancel_btn)
+    return keyboard
 
 
 def quick_actions_keyboard(role: UserRole,
@@ -34,21 +42,13 @@ def quick_actions_keyboard(role: UserRole,
     """Быстрые действия (Inline-кнопки). В групповом чате убираем кнопки напоминаний."""
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Мои занятия", callback_data="ux:lessons")],
-        [InlineKeyboardButton(text="Добавить занятие",
-                              callback_data="ux:add_lesson")],
     ]
 
     if not is_group:
         rows.append([InlineKeyboardButton(text="Добавить напоминание",
                                           callback_data="ux:add_reminder")])
-        rows.append([InlineKeyboardButton(text="Удалить напоминание",
-                                          callback_data="ux:remove_reminder")])
 
     rows.append(
         [InlineKeyboardButton(text="Статистика", callback_data="ux:stats")])
-
-    if role == UserRole.OWNER:
-        rows.append(
-            [InlineKeyboardButton(text="SQL консоль", callback_data="ux:sql")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)

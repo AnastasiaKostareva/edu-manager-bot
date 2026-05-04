@@ -50,11 +50,9 @@ async def get_or_create_user(event: Message | CallbackQuery) -> tuple[
         if (
                 existing.username != username
                 or existing.full_name != full_name
-                or existing.role != expected_role
         ):
             existing.username = username
             existing.full_name = full_name
-            existing.role = expected_role
             await user_repo.update(existing)
         return existing, False
 
@@ -66,7 +64,7 @@ async def get_or_create_user(event: Message | CallbackQuery) -> tuple[
         logger.info(f"IIIIIIIIIIIIIIIIIIIIIIIIIIIID:{user_id}")
         await user_repo.update(user_by_name)
         return user_by_name, False
-    
+
     new_user = User(
         telegram_id=user_id,
         username=username,

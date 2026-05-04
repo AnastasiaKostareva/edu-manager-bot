@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import logging
 
+from datetime import datetime, timezone
+
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -21,6 +23,8 @@ from infrastructure.telegram.handlers.helpers import (
 )
 from infrastructure.telegram.keyboards import add_cancel_button
 from infrastructure.telegram.states import GroupRegSG
+
+from domain.entities import LessonStatus
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +60,56 @@ async def group_start(message: Message, state: FSMContext):
     await state.set_state(GroupRegSG.waiting_for_username)
 
 
-@router.message(_GROUP, Command("done"), StateFilter(GroupRegSG.waiting_for_username))
+@router.message(_GROUP, Command("done"),
+                StateFilter(GroupRegSG.waiting_for_username))
 async def group_reg_done_early(message: Message, state: FSMContext):
     data = await state.get_data()
+    # Проверяем, что пишет тот же человек, кто начал (/start)
     if message.from_user.id != data.get("initiator_id"):
         return
+
     await state.clear()
-    await message.answer("✅ Регистрация завершена. Для добавления участников — /start снова.")
+
+    # Получаем пользователя, чтобы определить его роль для меню
+    user, _ = await get_or_create_user(message)
+
+    await message.answer(
+        "✅ Регистрация участников завершена!\n\n"
+        "Теперь вы можете назначать занятия и управлять чатом:",
+        reply_markup=main_menu_keyboard(user.role, is_group=True)
+    )
+    await message.answer(
+        "🚀 Быстрые действия:",
+        reply_markup=quick_actions_keyboard(user.role, is_group=True)
+    )
+
+
+@router.message(
+    _GROUP,
+    Command("done"),
+    StateFilter(GroupRegSG.role_selection, GroupRegSG.name_input,
+                GroupRegSG.confirmation),
+)
+async def group_reg_done_anytime(message: Message, state: FSMContext):
+    data = await state.get_data()
+    # Проверяем инициатора
+    if message.from_user.id != data.get("initiator_id"):
+        return
+
+    await state.clear()
+
+    # Получаем пользователя для меню
+    user, _ = await get_or_create_user(message)
+
+    await message.answer(
+        "✅ Регистрация завершена!\n\n"
+        "Меню для управления занятиями доступно ниже:",
+        reply_markup=main_menu_keyboard(user.role, is_group=True)
+    )
+    await message.answer(
+        "🚀 Быстрые действия:",
+        reply_markup=quick_actions_keyboard(user.role, is_group=True)
+    )
 
 
 @router.message(_GROUP, StateFilter(GroupRegSG.waiting_for_username))
@@ -157,12 +204,11 @@ async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
     else:
         from domain.entities import User
         try:
-            linked_user = await user_repo.create(User(
-                username=clean_username,
-                full_name=data["temp_name"],
-                role=role,
-                is_active=False,
-            ))
+            await message.answer(
+                "🚫 <b>Вас нет в базе данных.</b>\n\n"
+                "Обратитесь к преподавателю, чтобы он зарегистрировал вас в групповом чате или вручную."
+            )
+            return
         except Exception as e:
             await callback.message.edit_text(f"❌ Ошибка при сохранении: {e}")
             await state.set_state(GroupRegSG.waiting_for_username)
@@ -184,19 +230,6 @@ async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(GroupRegSG.waiting_for_username)
     await callback.answer()
-
-
-@router.message(
-    _GROUP,
-    Command("done"),
-    StateFilter(GroupRegSG.role_selection, GroupRegSG.name_input, GroupRegSG.confirmation),
-)
-async def group_reg_done_anytime(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if message.from_user.id != data.get("initiator_id"):
-        return
-    await state.clear()
-    await message.answer("✅ Регистрация завершена!")
 
 
 # ─────────────────────────────────────────
@@ -222,6 +255,82 @@ async def group_lessons(message: Message, state: FSMContext):
         for i, l in enumerate(lessons)
     )
     await message.answer(text)
+
+
+@router.callback_query(F.data.startswith("start_lesson:"))
+async def on_start_lesson(callback: CallbackQuery):
+    """Обработчик кнопки 'Начать занятие'"""
+    lesson_id = int(callback.data.split(":")[1])
+
+    # 1. Проверяем права: только учитель/админ может начать
+    user, _ = await get_or_create_user(callback)
+    if user.role not in (UserRole.TEACHER,UserRole.ADMIN , UserRole.OWNER):
+        await callback.answer("❌ Только преподаватель может начать занятие",
+                              show_alert=True)
+        return
+
+    # 2. Находим занятие
+    lesson = await lesson_repo.get_by_id(lesson_id)
+    if not lesson:
+        await callback.answer("❌ Занятие не найдено", show_alert=True)
+        return
+
+    # 3. Обновляем: ставим статус IN_PROGRESS и фиксируем время начала
+    lesson.status = LessonStatus.IN_PROGRESS
+    lesson.actual_start = datetime.now(timezone.utc)
+    await lesson_repo.update(lesson)
+
+    new_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Завершить",
+                              callback_data=f"complete_lesson:{lesson_id}")]
+    ])
+
+    await callback.message.edit_text(
+        f"🔴 Идет занятие: {lesson.topic}\n"
+        f"Ссылка для подключения:{lesson.lesson_link}\n"
+        f"🕐 Начато: {lesson.actual_start.astimezone(MSK).strftime('%H:%M')} МСК",
+        reply_markup=new_keyboard
+    )
+    await callback.answer("Занятие начато!")
+
+
+@router.callback_query(F.data.startswith("complete_lesson:"))
+async def on_complete_lesson(callback: CallbackQuery):
+    """Обработчик кнопки 'Завершить занятие'"""
+    lesson_id = int(callback.data.split(":")[1])
+
+    # 1. Проверяем права
+    user, _ = await get_or_create_user(callback)
+    if user.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+        await callback.answer("❌ Только преподаватель может завершить занятие",
+                              show_alert=True)
+        return
+
+    # 2. Находим занятие
+    lesson = await lesson_repo.get_by_id(lesson_id)
+    if not lesson:
+        await callback.answer("❌ Занятие не найдено", show_alert=True)
+        return
+
+    # 3. Обновляем: ставим статус COMPLETED и фиксируем время конца
+    lesson.status = LessonStatus.COMPLETED
+    lesson.actual_end = datetime.now(timezone.utc)
+
+    # Считаем длительность, если есть actual_start
+    if lesson.actual_start:
+        lesson.duration_minutes = int(
+            (lesson.actual_end - lesson.actual_start).total_seconds() / 60)
+
+    await lesson_repo.update(lesson)
+
+    # 4. Редактируем сообщение: финальный вид
+    await callback.message.edit_text(
+        f"✅ Занятие завершено: {lesson.topic}\n\n"
+        f"🕐 Начало: {lesson.actual_start.astimezone(MSK).strftime('%H:%M')} МСК\n"
+        f"🕑 Конец: {lesson.actual_end.astimezone(MSK).strftime('%H:%M')} МСК\n"
+        f"⏱ Длительность: {lesson.duration_minutes or '—'} мин"
+    )
+    await callback.answer("Занятие завершено!")
 
 
 def _fmt_dt(dt) -> str:

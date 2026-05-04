@@ -47,15 +47,6 @@ async def get_or_create_user(event: Message | CallbackQuery) -> tuple[
     # 1. Ищем по реальному Telegram ID
     existing = await user_repo.get_by_telegram_id(user_id)
     if existing:
-        if (
-                existing.username != username
-                or existing.full_name != full_name
-                or existing.role != expected_role
-        ):
-            existing.username = username
-            existing.full_name = full_name
-            existing.role = expected_role
-            await user_repo.update(existing)
         return existing, False
 
     # 2. Ищем по Username (логика для "групповых" юзеров)

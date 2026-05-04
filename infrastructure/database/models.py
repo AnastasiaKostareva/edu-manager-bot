@@ -165,17 +165,19 @@ class SavedQuery(models.Model):
 
 
 class Reminder(models.Model):
-    """
-    Таблица reminders
-    """
     id = fields.IntField(pk=True)
+
     user = fields.ForeignKeyField(
         "models.User",
         related_name="reminders",
-        on_delete=fields.CASCADE,
+        on_delete=fields.SET_NULL,
         source_field="user_id",
-        to_field="telegram_id"
+        to_field="telegram_id",
+        null=True,
     )
+
+    chat_id = fields.BigIntField(null=True)
+
     creator = fields.ForeignKeyField(
         "models.User",
         related_name="created_reminders",
@@ -201,9 +203,6 @@ class Reminder(models.Model):
     class Meta:
         table = "reminders"
         ordering = ["-remind_at"]
-
-    def __str__(self):
-        return f"Reminder({self.id}, {self.reminder_type})"
 
 class UserNotificationProfile(models.Model):
     """

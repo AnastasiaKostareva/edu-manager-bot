@@ -265,25 +265,28 @@ class ReminderRepository(IReminderRepository):
         from infrastructure.database.models import Reminder as ReminderModel
         model = await ReminderModel.create(
             user_id=reminder.user_id,
-            creator_id=reminder.creator_id,
+            chat_id=reminder.chat_id,  # 👈 Новое поле
             lesson_id=reminder.lesson_id,
             reminder_type=reminder.reminder_type.value,
             custom_text=reminder.custom_text,
             remind_at=reminder.remind_at,
             is_sent=reminder.is_sent,
+            creator_id=reminder.creator_id,
         )
         reminder.id = model.id
         return reminder
 
-    async def update(self, reminder: Reminder) -> Reminder:
+    async def update(self, reminder: Reminder) -> Reminder:  # 👈 Проверьте: async + правильное имя
         from infrastructure.database.models import Reminder as ReminderModel
         await ReminderModel.filter(id=reminder.id).update(
             user_id=reminder.user_id,
+            chat_id=reminder.chat_id,  # 👈 Новое поле
             lesson_id=reminder.lesson_id,
             reminder_type=reminder.reminder_type.value,
             custom_text=reminder.custom_text,
             remind_at=reminder.remind_at,
             is_sent=reminder.is_sent,
+            creator_id=reminder.creator_id,
         )
         return reminder
 
@@ -300,13 +303,14 @@ class ReminderRepository(IReminderRepository):
         return Reminder(
             id=model.id,
             user_id=model.user_id,
-            creator_id=model.creator_id,
+            chat_id=model.chat_id,  # 👈 Новое поле
             lesson_id=model.lesson_id,
             reminder_type=ReminderType(model.reminder_type),
             custom_text=model.custom_text,
             remind_at=model.remind_at,
             is_sent=model.is_sent,
             created_at=model.created_at,
+            creator_id=model.creator_id,
         )
 
 
@@ -380,7 +384,6 @@ class ChatMemberRepository(IChatMemberRepository):
             id=model.id,
             chat_id=model.chat_id,
             user_id=model.user_id,
-            profile_id=model.profile_id,
             joined_at=model.joined_at,
             is_active=model.is_active,
         )

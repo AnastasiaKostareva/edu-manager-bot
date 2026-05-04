@@ -161,11 +161,12 @@ class Lesson:
 
 @dataclass
 class Reminder:
-    id: int
-    user_id: int
-    lesson_id: Optional[int]
     reminder_type: ReminderType
     remind_at: datetime
+    id: Optional[int] = None
+    user_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    lesson_id: Optional[int] = None
     custom_text: Optional[str] = None
     creator_id: Optional[int] = None
     is_sent: bool = False

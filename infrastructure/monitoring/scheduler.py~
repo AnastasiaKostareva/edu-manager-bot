@@ -222,10 +222,14 @@ class Scheduler:
                     continue
 
                 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📅 Назначить занятие", callback_data="schedule_lesson")]
+                ])
 
                 await self.bot.send_message(
                     chat.chat_id,
-                    "📭 Нет запланированных занятий.\nХотите назначить следующее?"
+                    "📭 Нет запланированных занятий.\nХотите назначить следующее?",
+                    reply_markup=keyboard
                 )
                 self._chat_notified_at[chat.chat_id] = now
 

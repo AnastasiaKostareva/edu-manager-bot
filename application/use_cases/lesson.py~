@@ -4,10 +4,6 @@ from domain.entities import Lesson, LessonStatus, RepeatType, User, UserRole
 from domain.exceptions import PermissionDeniedException, ValidationException
 from application.interfaces.repositories import ILessonRepository
 
-from datetime import datetime, timedelta, timezone
-from tortoise.expressions import Q
-from domain.entities import LessonStatus, RepeatType
-
 
 class LessonService:
     def __init__(self, lesson_repo: ILessonRepository):

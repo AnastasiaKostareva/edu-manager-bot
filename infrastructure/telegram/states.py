@@ -13,6 +13,7 @@ class AddLessonSG(StatesGroup):
     time = State()            # Время занятия
     confirmation = State()    # Подтверждение данных
     link = State()
+    chat_reminder = State()
 
 
 class RemoveLessonSG(StatesGroup):
