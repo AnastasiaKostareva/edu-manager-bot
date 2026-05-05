@@ -93,11 +93,8 @@ class NotificationWorker:
                 text = reminder.custom_text or "Напоминание"
 
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Начать занятие", callback_data=f"start_lesson:{lesson.id}")]
-            ])
 
-            await self.bot.send_message(reminder.user_id, text, reply_markup=keyboard)
+            await self.bot.send_message(reminder.user_id, text)
         else:
             await self.bot.send_message(reminder.user_id, reminder.custom_text or "Напоминание")
 
