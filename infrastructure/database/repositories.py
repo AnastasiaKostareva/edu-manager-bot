@@ -1,7 +1,5 @@
 from typing import Optional, List
-from datetime import datetime
-
-from tortoise import Tortoise
+from datetime import datetime, timezone
 
 from domain.entities import User, UserRole, Lesson, LessonStatus, RepeatType, Reminder, Chat, ChatMember
 
@@ -164,7 +162,7 @@ class LessonRepository(ILessonRepository):
 
     async def get_upcoming(self, limit: int = 10) -> List[Lesson]:
         from infrastructure.database.models import Lesson as LessonModel
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         models = await LessonModel.filter(
             scheduled_at__gt=now,
             status__in=[LessonStatus.SCHEDULED.value, LessonStatus.CONFIRMED.value],
@@ -173,7 +171,7 @@ class LessonRepository(ILessonRepository):
 
     async def get_upcoming_for_chat(self, chat_id: int) -> Optional[Lesson]:
         from infrastructure.database.models import Lesson as LessonModel
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         model = await LessonModel.filter(
             chat_id=chat_id,
             scheduled_at__gt=now,
@@ -265,7 +263,7 @@ class ReminderRepository(IReminderRepository):
         from infrastructure.database.models import Reminder as ReminderModel
         model = await ReminderModel.create(
             user_id=reminder.user_id,
-            chat_id=reminder.chat_id,  # 👈 Новое поле
+            chat_id=reminder.chat_id,
             lesson_id=reminder.lesson_id,
             reminder_type=reminder.reminder_type.value,
             custom_text=reminder.custom_text,
@@ -276,11 +274,11 @@ class ReminderRepository(IReminderRepository):
         reminder.id = model.id
         return reminder
 
-    async def update(self, reminder: Reminder) -> Reminder:  # 👈 Проверьте: async + правильное имя
+    async def update(self, reminder: Reminder) -> Reminder:
         from infrastructure.database.models import Reminder as ReminderModel
         await ReminderModel.filter(id=reminder.id).update(
             user_id=reminder.user_id,
-            chat_id=reminder.chat_id,  # 👈 Новое поле
+            chat_id=reminder.chat_id,
             lesson_id=reminder.lesson_id,
             reminder_type=reminder.reminder_type.value,
             custom_text=reminder.custom_text,
@@ -303,7 +301,7 @@ class ReminderRepository(IReminderRepository):
         return Reminder(
             id=model.id,
             user_id=model.user_id,
-            chat_id=model.chat_id,  # 👈 Новое поле
+            chat_id=model.chat_id,
             lesson_id=model.lesson_id,
             reminder_type=ReminderType(model.reminder_type),
             custom_text=model.custom_text,
