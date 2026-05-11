@@ -29,6 +29,7 @@ services:
       DB_NAME: edu_manager
       ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
       PGPASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Etc/UTC
     volumes:
       - ./appsettings.yaml:/app/appsettings.yaml
     restart: unless-stopped
