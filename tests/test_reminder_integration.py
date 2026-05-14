@@ -296,6 +296,76 @@ class TestGetPendingLogic:
 
 # ─── Timezone edge cases ──────────────────────────────────────────────────────
 
+
+    @pytest.mark.asyncio
+    async def test_worker_sends_to_group_chat_when_chat_id_set(self):
+        """Напоминание с chat_id и user_id=None доставляется в групповой чат,
+        а не падает из-за None user_id (воспроизводит исправлённый баг)."""
+        group_chat_id = -1001234567890
+        reminder = Reminder(
+            id=9, user_id=None, creator_id=111,
+            chat_id=group_chat_id,
+            lesson_id=1, reminder_type=ReminderType.LESSON,
+            remind_at=datetime.now(timezone.utc) - timedelta(seconds=30),
+            is_sent=False,
+        )
+        lesson = Lesson(
+            id=1, chat_id=group_chat_id, created_by=111,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            status=LessonStatus.SCHEDULED, topic="Групповое занятие",
+        )
+        reminder_repo = AsyncMock()
+        reminder_repo.get_pending.return_value = [reminder]
+        lesson_repo = AsyncMock()
+        lesson_repo.get_by_id.return_value = lesson
+
+        bot = AsyncMock()
+        worker = NotificationWorker.__new__(NotificationWorker)
+        worker.bot = bot
+        worker.reminder_repo = reminder_repo
+        worker.lesson_repo = lesson_repo
+
+        await worker._check_and_send()
+
+        bot.send_message.assert_called_once()
+        target = bot.send_message.call_args[0][0]
+        assert target == group_chat_id, f"Ожидался групповой чат {group_chat_id}, получен {target}"
+        reminder_repo.mark_sent.assert_called_once_with(9)
+
+    @pytest.mark.asyncio
+    async def test_worker_skips_reminder_with_no_target(self):
+        """Напоминание без user_id и chat_id не отправляется, но помечается sent
+        (чтобы не зависать в очереди навсегда)."""
+        reminder = Reminder(
+            id=10, user_id=None, creator_id=111,
+            chat_id=None,
+            lesson_id=1, reminder_type=ReminderType.LESSON,
+            remind_at=datetime.now(timezone.utc) - timedelta(seconds=30),
+            is_sent=False,
+        )
+        lesson = Lesson(
+            id=1, chat_id=9999, created_by=111,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            status=LessonStatus.SCHEDULED, topic="Тест",
+        )
+        reminder_repo = AsyncMock()
+        reminder_repo.get_pending.return_value = [reminder]
+        lesson_repo = AsyncMock()
+        lesson_repo.get_by_id.return_value = lesson
+
+        bot = AsyncMock()
+        worker = NotificationWorker.__new__(NotificationWorker)
+        worker.bot = bot
+        worker.reminder_repo = reminder_repo
+        worker.lesson_repo = lesson_repo
+
+        await worker._check_and_send()
+
+        # Сообщение не отправлено (нет цели), но mark_sent вызван — иначе
+        # напоминание будет бесконечно возвращаться в get_pending.
+        bot.send_message.assert_not_called()
+        reminder_repo.mark_sent.assert_called_once_with(10)
+
 class TestTimezoneHandling:
     @pytest.mark.asyncio
     async def test_msk_lesson_reminder_stored_as_utc(self, reminder_service, teacher, future_lesson):
@@ -316,22 +386,28 @@ class TestTimezoneHandling:
 
     @pytest.mark.asyncio
     async def test_naive_lesson_scheduled_at_treated_as_msk(self):
-        """Если scheduled_at без tzinfo — обратная совместимость: считаем МСК."""
+        """Если scheduled_at без tzinfo — обратная совместимость: считаем МСК.
+
+        Используем дату далеко в будущем, чтобы независимо от часового пояса
+        окружения remind_at не оказался в прошлом (naive + replace(MSK) сдвигает
+        время назад относительно UTC, поэтому нужен запас > 3 часов).
+        """
         naive_lesson = Lesson(
             id=3, chat_id=9999, created_by=111,
-            scheduled_at=datetime.now() + timedelta(hours=2),  # naive!
+            scheduled_at=datetime.now() + timedelta(days=7),  # naive, далеко в будущем
             status=LessonStatus.SCHEDULED, topic="Без TZ",
         )
         lesson_repo = AsyncMock()
         lesson_repo.get_by_id.return_value = naive_lesson
         reminder_repo = AsyncMock()
+        reminder_repo = AsyncMock()
         reminder_repo.create.side_effect = lambda r: _set_id(r, 99)
         teacher = User(telegram_id=111, username="t", role=UserRole.TEACHER)
 
         svc = ReminderService(reminder_repo, lesson_repo)
-        # Не должно упасть
         result = await svc.create_for_lesson(
             actor=teacher, target_user_id=111,
             lesson_id=3, reminder_type=ReminderType.LESSON, time_value="10m",
         )
         assert result.remind_at is not None
+        assert result.remind_at.tzinfo is not None
