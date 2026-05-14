@@ -39,7 +39,7 @@ class LessonService:
         Назначает новое занятие.
         Выполняет проверки прав и валидацию данных.
         """
-        if actor.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+        if actor.role not in (UserRole.ADMIN, UserRole.OWNER):
             raise PermissionDeniedException("No permission to schedule lesson")
         if not topic:
             raise ValidationException("Topic is required")

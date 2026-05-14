@@ -70,14 +70,26 @@ async def cb_ux_router(callback: CallbackQuery, state: FSMContext):
                 "⚠️ Создавать напоминания можно только в личных сообщениях с ботом."
             )
         else:
+            actor = await resolve_user_from_tg(callback.from_user)
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
             from infrastructure.telegram.keyboards import add_cancel_button
             from infrastructure.telegram.states import AddReminderSG
 
-            kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Себе", callback_data="target:self")],
-                [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
-            ]))
+            if actor.role in (UserRole.ADMIN, UserRole.OWNER):
+                kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+                    [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
+                    [InlineKeyboardButton(text="Преподу", callback_data="target:teacher")],
+                ]))
+            elif actor.role == UserRole.TEACHER:
+                kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+                    [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
+                ]))
+            else:
+                kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+                ]))
             await callback.message.answer("Кому напоминание?", reply_markup=kb)
             await state.set_state(AddReminderSG.target)
 

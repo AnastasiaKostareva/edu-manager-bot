@@ -52,7 +52,6 @@ class Scheduler:
 
         while self._running:
             try:
-                await self._check_reminders()
                 await self._check_lesson_completions()
                 await self._check_overdue_lessons()
                 await self._check_chats()

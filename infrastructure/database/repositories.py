@@ -251,6 +251,12 @@ class ReminderRepository(IReminderRepository):
         models = await ReminderModel.filter(user_id=user_id).order_by("-remind_at")
         return [self._to_entity(m) for m in models]
 
+
+    async def get_by_lesson_id(self, lesson_id: int) -> List[Reminder]:
+        from infrastructure.database.models import Reminder as ReminderModel
+        models = await ReminderModel.filter(lesson_id=lesson_id).order_by("remind_at")
+        return [self._to_entity(m) for m in models]
+
     async def get_pending(self, before: datetime) -> List[Reminder]:
         from infrastructure.database.models import Reminder as ReminderModel
         models = await ReminderModel.filter(
