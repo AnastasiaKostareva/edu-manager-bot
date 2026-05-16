@@ -83,6 +83,11 @@ async def start_registration_flow(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Только тот, кто вызвал /start, может регистрировать участников.", show_alert=True)
         return
 
+    user, _ = await get_or_create_user(callback)
+    if user.role not in (UserRole.ADMIN, UserRole.OWNER):
+        await callback.answer("❌ Только администратор или владелец могут регистрировать участников.", show_alert=True)
+        return
+
     await callback.message.edit_text("Введите @username участника или /done для завершения.")
     await state.set_state(GroupRegSG.waiting_for_username)
     await callback.answer()
