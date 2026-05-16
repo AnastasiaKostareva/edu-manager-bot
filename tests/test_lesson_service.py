@@ -38,13 +38,19 @@ class TestLessonService:
         lesson_repo_mock.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_teacher_cannot_schedule_lesson(self, lesson_service, teacher_user):
-        """Преподаватель не может назначать занятия — только ADMIN/OWNER."""
+    async def test_teacher_can_schedule_lesson(self, lesson_service, lesson_repo_mock, teacher_user):
+        """Преподаватель может назначать занятия."""
         future_time = datetime.now(timezone.utc) + timedelta(days=1)
-        with pytest.raises(PermissionDeniedException):
-            await lesson_service.schedule(
-                actor=teacher_user, chat_id=12345, scheduled_at=future_time, topic="Математика"
-            )
+        lesson_repo_mock.create.return_value = Lesson(
+            id=1, chat_id=12345, created_by=teacher_user.telegram_id,
+            scheduled_at=future_time, status=LessonStatus.SCHEDULED, topic="Математика",
+        )
+        result = await lesson_service.schedule(
+            actor=teacher_user, chat_id=12345, scheduled_at=future_time, topic="Математика"
+        )
+        assert result.topic == "Математика"
+        assert result.status == LessonStatus.SCHEDULED
+        lesson_repo_mock.create.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_student_cannot_schedule_lesson(self, lesson_service, student_user):

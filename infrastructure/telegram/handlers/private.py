@@ -168,7 +168,7 @@ async def cmd_add_lesson(message: Message, state: FSMContext):
     await state.clear()
     user, _ = await get_or_create_user(message)
     try:
-        auth_service.ensure_role(user, [UserRole.ADMIN, UserRole.OWNER])
+        auth_service.ensure_role(user, [UserRole.ADMIN, UserRole.OWNER, UserRole.TEACHER])
     except PermissionDeniedException:
         await message.answer("У вас нет доступа к этой команде.")
         return
@@ -179,7 +179,7 @@ async def cmd_add_lesson(message: Message, state: FSMContext):
 @router.callback_query(F.data == "schedule_lesson")
 async def cb_schedule_lesson(callback: CallbackQuery, state: FSMContext):
     user, _ = await get_or_create_user(callback)
-    if user.role not in (UserRole.ADMIN, UserRole.OWNER):
+    if user.role not in (UserRole.ADMIN, UserRole.OWNER, UserRole.TEACHER):
         await callback.answer("У вас нет прав.", show_alert=True)
         return
     await _start_add_lesson(callback.message, state)
@@ -219,7 +219,7 @@ async def add_lesson_weekday(callback: CallbackQuery, state: FSMContext):
     weekday_index = int(callback.data.split(":")[1])
     today = datetime.now(MSK).date()
     days_ahead = (weekday_index - today.weekday()) % 7
-    target_date = today + timedelta(days=days_ahead if days_ahead > 0 else 7)
+    target_date = today + timedelta(days_ahead if days_ahead > 0 else 7)
     await state.update_data(target_date=target_date)
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     await callback.message.edit_text(
