@@ -8,7 +8,7 @@ from aiogram import Bot
 from application.config import get_config
 from infrastructure.database.repositories import ReminderRepository, LessonRepository, ChatRepository, UserRepository, ChatMemberRepository
 from application.use_cases.lesson import LessonService
-from domain.entities import LessonStatus, ReminderType, UserRole
+from domain.entities import LessonStatus, ReminderType, UserRole, StartNotificationLevel
 
 logger = logging.getLogger(__name__)
 
@@ -115,46 +115,64 @@ class Scheduler:
     async def _check_lesson_completions(self):
         """Проверяет занятия, которые должны начаться, и отправляет уведомление в чат"""
         lessons = await self.lesson_service.get_lessons_needing_completion()
+        now = datetime.now(timezone.utc)
         for lesson in lessons:
             try:
                 # 🔹 Отправляем в ОБЩИЙ ЧАТ, а не в ЛС
                 chat_id = lesson.chat_id
 
-                from aiogram.types import InlineKeyboardMarkup, \
-                    InlineKeyboardButton
-
-                # Кнопка "Начать" — доступна только преподавателям/админам
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(
-                        text="▶️ Начать занятие",
-                        callback_data=f"start_lesson:{lesson.id}"
-                    )]
-                ])
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
                 lesson_dt = lesson.scheduled_at
                 if lesson_dt.tzinfo is None:
                     lesson_dt = lesson_dt.replace(tzinfo=MSK)
 
-                message_text = (
-                    f"⏰ Пора начинать!\n\n"
-                    f"📚 Тема: {lesson.topic}\n"
-                    f"🕐 Запланировано: {lesson_dt.astimezone(MSK).strftime('%d.%m %H:%M')} МСК"
-                )
+                time_passed = (now - lesson_dt).total_seconds() / 60.0
 
-                sent_message = await self.bot.send_message(
-                    chat_id,
-                    message_text,
-                    reply_markup=keyboard
-                )
+                if lesson.start_notification_level == StartNotificationLevel.NONE and time_passed >= 0:
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="▶️ Начать занятие",
+                            callback_data=f"start_lesson:{lesson.id}"
+                        )]
+                    ])
+                    message_text = (
+                        f"⏰ Пора начинать!\n\n"
+                        f"📚 Тема: {lesson.topic}\n"
+                        f"🕐 Запланировано: {lesson_dt.astimezone(MSK).strftime('%d.%m %H:%M')} МСК"
+                    )
+                    await self.bot.send_message(chat_id, message_text, reply_markup=keyboard)
+                    lesson.start_notification_level = StartNotificationLevel.STARTED
+                    await self.lesson_repo.update(lesson)
+                    logger.info(f"Sent start notification for lesson {lesson.id} (level: NONE -> STARTED)")
 
-                # Сохраняем ID сообщения, чтобы потом его отредактировать при нажатии
-                # (опционально, если хотите редактировать то же сообщение)
-                logger.info(
-                    f"Sent start notification for lesson {lesson.id} to chat {chat_id}")
+                elif lesson.start_notification_level == StartNotificationLevel.STARTED and time_passed >= 10:
+                    message_text = (
+                        f"⚠️ Занятие «{lesson.topic}» задерживается уже на 10 минут!\n"
+                    )
+                    await self.bot.send_message(chat_id, message_text)
+                    lesson.start_notification_level = StartNotificationLevel.LATE_10_MIN
+                    await self.lesson_repo.update(lesson)
+                    logger.info(f"Sent late_10 warning for lesson {lesson.id} (level: STARTED -> LATE_10_MIN)")
+
+                elif lesson.start_notification_level == StartNotificationLevel.LATE_10_MIN and time_passed >= 30:
+                    message_text = (
+                        f"🚨 Прошло 30 минут с ожидаемого начала занятия «{lesson.topic}».\n"
+                        f"Оно до сих пор не начато!"
+                    )
+                    admins = await self.user_repo.get_all_admins()
+                    for admin in admins:
+                        try:
+                            await self.bot.send_message(admin.telegram_id, f"Чат {chat_id}:\n" + message_text)
+                        except Exception:
+                            pass
+                    await self.bot.send_message(chat_id, message_text)
+                    lesson.start_notification_level = StartNotificationLevel.LATE_30_MIN
+                    await self.lesson_repo.update(lesson)
+                    logger.info(f"Sent late_30 warning for lesson {lesson.id} (level: LATE_10_MIN -> LATE_30_MIN)")
 
             except Exception as e:
-                logger.error(
-                    f"Failed to send start notification for lesson {lesson.id}: {e}")
+                logger.error(f"Failed to process start notification for lesson {lesson.id}: {e}")
 
     async def _check_overdue_lessons(self):
         overdue_lessons = await self.lesson_service.get_overdue_lessons(hours=24)

@@ -1,7 +1,8 @@
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from domain.entities import User, UserRole, Lesson, LessonStatus, RepeatType, Reminder, Chat, ChatMember
+from domain.entities import (User, UserRole, Lesson, LessonStatus, RepeatType, Reminder, Chat, ChatMember,
+                             StartNotificationLevel)
 
 from application.interfaces.repositories import (
     IUserRepository,
@@ -198,6 +199,7 @@ class LessonRepository(ILessonRepository):
             duration_minutes=lesson.duration_minutes,
             status=lesson.status.value,
             topic=lesson.topic,
+            start_notification_level=lesson.start_notification_level.value,
         )
         lesson.id = model.id
         return lesson
@@ -214,6 +216,7 @@ class LessonRepository(ILessonRepository):
             duration_minutes=lesson.duration_minutes,
             status=lesson.status.value,
             topic=lesson.topic,
+            start_notification_level=lesson.start_notification_level.value,
         )
         return lesson
 
@@ -235,6 +238,7 @@ class LessonRepository(ILessonRepository):
             duration_minutes=model.duration_minutes,
             status=LessonStatus(model.status),
             topic=model.topic,
+            start_notification_level=StartNotificationLevel(model.start_notification_level),
             created_at=model.created_at,
             updated_at=model.updated_at,
         )

@@ -161,6 +161,7 @@ class LessonService:
                 duration_minutes=model.duration_minutes,
                 status=LessonStatus(model.status),
                 topic=model.topic,
+                start_notification_level=model.start_notification_level,
                 created_at=model.created_at,
                 updated_at=model.updated_at,
             )
@@ -206,6 +207,7 @@ class LessonService:
                     duration_minutes=model.duration_minutes,
                     status=LessonStatus(model.status),
                     topic=model.topic,
+                    start_notification_level=model.start_notification_level,
                     created_at=model.created_at,
                     updated_at=model.updated_at,
                 )

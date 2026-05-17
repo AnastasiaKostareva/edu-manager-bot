@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
@@ -24,6 +24,12 @@ class RepeatType(str, Enum):
     WEEKLY = "weekly"
     EVERY_2_WEEKS = "every_2_weeks"
     MONTHLY = "monthly"
+
+class StartNotificationLevel(IntEnum):
+    NONE = 0
+    STARTED = 1
+    LATE_10_MIN = 2
+    LATE_30_MIN = 3
 
 class ReminderType(str, Enum):
     LESSON = "lesson"
@@ -143,6 +149,7 @@ class Lesson:
     scheduled_at: datetime
     scheduled_end: Optional[datetime] = None
     status: LessonStatus = LessonStatus.SCHEDULED
+    start_notification_level: StartNotificationLevel = StartNotificationLevel.NONE
     actual_start: Optional[datetime] = None
     actual_end: Optional[datetime] = None
     duration_minutes: Optional[int] = None
