@@ -37,6 +37,10 @@ class IUserRepository(ABC):
     async def get_all_active(self) -> list[User]:
         pass
 
+    @abstractmethod
+    async def search_users(self, query: str) -> list[User]:
+        pass
+
 
 class ILessonRepository(ABC):
     @abstractmethod

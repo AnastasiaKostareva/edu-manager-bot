@@ -126,6 +126,38 @@ class UserRepository(IUserRepository):
             for m in models
         ]
 
+    async def search_users(self, query: str) -> list[User]:
+        from infrastructure.database.models import User as UserModel
+        from tortoise.expressions import Q
+
+        text = query.strip()
+        if not text:
+            return []
+
+        if text.startswith("@"):
+            username = text[1:].strip()
+            if not username:
+                return []
+            qs = UserModel.filter(username__iexact=username)
+        else:
+            qs = UserModel.filter(
+                Q(username__icontains=text)
+                | Q(full_name__icontains=text)
+            )
+
+        models = await qs
+        return [
+            User(
+                telegram_id=m.telegram_id,
+                username=m.username,
+                full_name=m.full_name,
+                phone=m.phone,
+                role=UserRole(m.role),
+                is_active=m.is_active,
+            )
+            for m in models
+        ]
+
 
 class LessonRepository(ILessonRepository):
     async def get_by_id(self, lesson_id: int) -> Optional[Lesson]:

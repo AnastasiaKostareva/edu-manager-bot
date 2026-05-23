@@ -50,7 +50,7 @@ async def cb_ux_router(callback: CallbackQuery, state: FSMContext):
 
         if actor.role in (UserRole.ADMIN, UserRole.OWNER):
             kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")]
+                [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="search_user_start")]
             ]))
         else:
             kb = None

@@ -14,6 +14,12 @@ class UserService:
     async def get_user_by_username(self, username: str) -> Optional[User]:
         return await self._user_repo.get_by_username(username)
 
+    async def search_users(self, query: str) -> list[User]:
+        normalized = (query or "").strip()
+        if not normalized:
+            return []
+        return await self._user_repo.search_users(normalized)
+
     async def create_user(
         self,
         telegram_id: int,

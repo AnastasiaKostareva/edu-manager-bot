@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, \
     KeyboardButton, ReplyKeyboardMarkup
 
-from domain.entities import UserRole
+from domain.entities import User, UserRole
 
 
 def main_menu_keyboard(role: UserRole,
@@ -50,4 +50,17 @@ def quick_actions_keyboard(role: UserRole,
     rows.append(
         [InlineKeyboardButton(text="Статистика", callback_data="ux:stats")])
 
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_user_search_results_kb(users: list[User]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for u in users:
+        name = (u.full_name or "").strip()
+        handle = f"@{u.username}" if u.username else "нет юзернейма"
+        label = f"{name} — {handle}" if name else handle
+        rows.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"search_sel:{u.telegram_id}",
+        )])
     return InlineKeyboardMarkup(inline_keyboard=rows)

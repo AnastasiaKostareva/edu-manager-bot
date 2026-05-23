@@ -31,11 +31,15 @@ from infrastructure.telegram.handlers.helpers import (
     get_admin_contact_username, answer_or_edit,
     build_reminder_time_keyboard, reminder_payload_from_state, parse_reminder_time_payload,
 )
-from infrastructure.telegram.keyboards import main_menu_keyboard, quick_actions_keyboard, add_cancel_button
+from infrastructure.telegram.keyboards import (
+    main_menu_keyboard, quick_actions_keyboard, add_cancel_button,
+    build_user_search_results_kb,
+)
 from infrastructure.telegram.states import (
     AddLessonSG, AddReminderSG, RemoveLessonSG, RemoveReminderSG,
-    SqlConsoleSG, CompleteLessonSG,
+    SqlConsoleSG, CompleteLessonSG, UserSearchSG,
 )
+from application.use_cases.user import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,7 @@ lesson_service = LessonService(lesson_repo)
 reminder_service = ReminderService(reminder_repo, lesson_repo)
 analytics_service = AnalyticsService()
 statistics_service = StatisticsService()
+user_service = UserService(user_repo)
 
 # Фильтр: только личные сообщения
 _PRIVATE = F.chat.type == "private"
@@ -101,7 +106,7 @@ async def pm_lessons(message: Message, state: FSMContext):
 
     if user.role in (UserRole.ADMIN, UserRole.OWNER):
         kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="admin_find_user")]
+            [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="search_user_start")]
         ]))
         if not lessons:
             await message.answer("📚 У вас пока нет назначенных занятий.", reply_markup=kb)
@@ -128,26 +133,74 @@ async def pm_lessons(message: Message, state: FSMContext):
     await message.answer(text)
 
 
-@router.callback_query(_PRIVATE, F.data == "admin_find_user")
-async def pm_admin_find_user_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state("admin_find_user_pm")
-    await callback.message.answer("Введите @username пользователя:")
+@router.callback_query(_PRIVATE, F.data == "search_user_start")
+async def pm_user_search_start(callback: CallbackQuery, state: FSMContext):
+    actor, _ = await get_or_create_user(callback)
+    if actor.role not in (UserRole.ADMIN, UserRole.OWNER):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    await state.set_state(UserSearchSG.waiting_for_user_search_query)
+    await callback.message.answer(
+        "Введите @username, имя или фамилию пользователя для поиска:"
+    )
     await callback.answer()
 
 
-@router.message(_PRIVATE, StateFilter("admin_find_user_pm"))
-async def pm_admin_find_user(message: Message, state: FSMContext):
-    username = message.text.strip().lstrip("@")
-    user = await user_repo.get_by_username(username)
+@router.message(_PRIVATE, UserSearchSG.waiting_for_user_search_query)
+async def pm_user_search_query(message: Message, state: FSMContext):
+    query = (message.text or "").strip()
     await state.clear()
-    if not user:
-        await message.answer("❌ Пользователь не найден.")
+
+    if not query:
+        await message.answer("❌ Пустой запрос. Попробуйте ещё раз через меню.")
         return
-    lessons = await lesson_service.list_for_user(user.telegram_id)
+
+    users = await user_service.search_users(query)
+
+    if not users:
+        await message.answer(
+            f"❌ Пользователь «{query}» не найден. Проверьте правильность ввода."
+        )
+        return
+
+    if len(users) == 1:
+        await _show_user_lessons(message, users[0])
+        return
+
+    await message.answer(
+        "Найдено несколько пользователей. Выберите нужного:",
+        reply_markup=build_user_search_results_kb(users),
+    )
+
+
+@router.callback_query(_PRIVATE, F.data.startswith("search_sel:"))
+async def pm_user_search_select(callback: CallbackQuery):
+    actor, _ = await get_or_create_user(callback)
+    if actor.role not in (UserRole.ADMIN, UserRole.OWNER):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+
+    telegram_id = int(callback.data.split(":")[1])
+    target = await user_repo.get_by_telegram_id(telegram_id)
+    if not target:
+        await callback.message.edit_text("❌ Пользователь больше не доступен.")
+        await callback.answer()
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _show_user_lessons(callback.message, target)
+    await callback.answer()
+
+
+async def _show_user_lessons(message: Message, target) -> None:
+    lessons = await lesson_service.list_for_user(target.telegram_id)
+    display = target.full_name or (f"@{target.username}" if target.username else str(target.telegram_id))
+
     if not lessons:
-        await message.answer(f"У @{user.username} нет занятий.")
+        await message.answer(f"У пользователя {display} нет занятий.")
         return
-    text = f"📚 Занятия @{user.username}:\n\n" + "\n".join(
+
+    text = f"📚 Занятия пользователя {display}:\n\n" + "\n".join(
         f"{i + 1}. {l.topic} — {_fmt_dt(l.scheduled_at)}"
         for i, l in enumerate(lessons)
     )
