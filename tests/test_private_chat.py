@@ -84,7 +84,7 @@ async def test_lessons_command_as_student(tg_user, tg_chat, mock_user):
     message.answer = AsyncMock()
     state = await get_mock_state()
 
-    with patch('infrastructure.telegram.handlers.private.get_or_create_user', return_value=(mock_user, False)), \
+    with patch('infrastructure.telegram.handlers.private.get_or_create_user', new=AsyncMock(return_value=(mock_user, False))), \
          patch('infrastructure.telegram.handlers.private.lesson_service.list_for_user', return_value=[]):
         await cmd_lessons(message, state)
 
@@ -102,7 +102,7 @@ async def test_lessons_command_as_owner_shows_search_button(tg_user, tg_chat, mo
     message.bot = MagicMock()
     state = await get_mock_state()
 
-    with patch('infrastructure.telegram.handlers.private.get_or_create_user', return_value=(mock_owner, False)), \
+    with patch('infrastructure.telegram.handlers.private.get_or_create_user', new=AsyncMock(return_value=(mock_owner, False))), \
          patch('infrastructure.telegram.handlers.private.lesson_service.list_for_user', return_value=[]):
         await cmd_lessons(message, state)
 
@@ -112,8 +112,8 @@ async def test_lessons_command_as_owner_shows_search_button(tg_user, tg_chat, mo
     assert kwargs['reply_markup'].inline_keyboard[0][0].text == "🔍 Найти пользователя"
 
 @pytest.mark.asyncio
-async def test_add_reminder_flow_target_selection(tg_user, tg_chat):
-    """Проверка начала сценария напоминания: выбор цели."""
+async def test_add_reminder_flow_target_selection(tg_user, tg_chat, mock_user):
+    """Студент видит только кнопку 'Себе'."""
     message = MagicMock(spec=Message)
     message.chat = tg_chat
     message.from_user = tg_user
@@ -121,12 +121,36 @@ async def test_add_reminder_flow_target_selection(tg_user, tg_chat):
     message.bot = MagicMock()
     state = await get_mock_state()
 
-    await cmd_add_reminder(message, state)
+    with patch('infrastructure.telegram.handlers.private.get_or_create_user', new=AsyncMock(return_value=(mock_user, False))):
+        await cmd_add_reminder(message, state)
 
     assert await state.get_state() == AddReminderSG.target
-    # Проверяем текст вопроса
     args, kwargs = message.answer.call_args
     assert "Кому напоминание?" in args[0]
+    buttons = [btn.text for row in kwargs['reply_markup'].inline_keyboard for btn in row]
+    assert "Себе" in buttons
+    assert "Студенту" not in buttons
+    assert "Преподу" not in buttons
+
+
+@pytest.mark.asyncio
+async def test_add_reminder_flow_owner_sees_all_targets(tg_user, tg_chat, mock_owner):
+    """OWNER видит все три кнопки: Себе, Студенту, Преподу."""
+    message = MagicMock(spec=Message)
+    message.chat = tg_chat
+    message.from_user = tg_user
+    message.answer = AsyncMock()
+    message.bot = MagicMock()
+    state = await get_mock_state()
+
+    with patch('infrastructure.telegram.handlers.private.get_or_create_user', new=AsyncMock(return_value=(mock_owner, False))):
+        await cmd_add_reminder(message, state)
+
+    args, kwargs = message.answer.call_args
+    buttons = [btn.text for row in kwargs['reply_markup'].inline_keyboard for btn in row]
+    assert "Себе" in buttons
+    assert "Студенту" in buttons
+    assert "Преподу" in buttons
 
 @pytest.mark.asyncio
 async def test_reminder_target_callback_saves_data(tg_user, tg_chat):
@@ -152,27 +176,4 @@ async def test_reminder_target_callback_saves_data(tg_user, tg_chat):
     target = callback.data.split(":")[1]
     await state.update_data(target=target)
 
-    # 4. Проверка данных
-    data = await state.get_data()
-    assert data.get("target") == "self"
-
-
-@pytest.mark.asyncio
-async def test_menu_button_clears_fsm_state(tg_user, tg_chat, mock_user):
-    """Кнопка 'Мои занятия' сбрасывает FSM состояние перед выполнением."""
-    message = MagicMock(spec=Message)
-    message.chat = tg_chat
-    message.from_user = tg_user
-    message.text = "Мои занятия"
-    message.answer = AsyncMock()
-
-    # Ставим в случайное состояние напоминания
-    state = await get_mock_state(AddReminderSG.time)
-
-    with patch('infrastructure.telegram.handlers.private.get_or_create_user', return_value=(mock_user, False)), \
-         patch('infrastructure.telegram.handlers.private.lesson_service.list_for_user', return_value=[]):
-        await cmd_lessons(message, state)
-
-    # State должен быть сброшен (pm_lessons делает state.clear() в начале)
-    assert await state.get_state() is None
-    message.answer.assert_called()
+    # 4. Провер

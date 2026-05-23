@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  lint-and-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check syntax (ast parse)
+        run: |
+          python - << 'EOF'
+          import ast, pathlib, sys
+          errors = []
+          for p in pathlib.Path(".").rglob("*.py"):
+            if any(part.startswith(".") or part == "__pycache__" for part in p.parts):
+              continue
+            try:
+              ast.parse(p.read_text(encoding="utf-8"))
+            except SyntaxError as e:
+              errors.append(f"{p}: {e}")
+          if errors:
+            print("\n".join(errors)); sys.exit(1)
+          print(f"Syntax OK ({len(list(pathlib.Path('.').rglob('*.py')))} files)")
+          EOF
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short

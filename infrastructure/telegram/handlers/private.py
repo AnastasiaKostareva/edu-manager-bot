@@ -168,7 +168,7 @@ async def cmd_add_lesson(message: Message, state: FSMContext):
     await state.clear()
     user, _ = await get_or_create_user(message)
     try:
-        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER])
+        auth_service.ensure_role(user, [UserRole.ADMIN, UserRole.OWNER, UserRole.TEACHER])
     except PermissionDeniedException:
         await message.answer("У вас нет доступа к этой команде.")
         return
@@ -179,7 +179,7 @@ async def cmd_add_lesson(message: Message, state: FSMContext):
 @router.callback_query(F.data == "schedule_lesson")
 async def cb_schedule_lesson(callback: CallbackQuery, state: FSMContext):
     user, _ = await get_or_create_user(callback)
-    if user.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+    if user.role not in (UserRole.ADMIN, UserRole.OWNER, UserRole.TEACHER):
         await callback.answer("У вас нет прав.", show_alert=True)
         return
     await _start_add_lesson(callback.message, state)
@@ -219,7 +219,7 @@ async def add_lesson_weekday(callback: CallbackQuery, state: FSMContext):
     weekday_index = int(callback.data.split(":")[1])
     today = datetime.now(MSK).date()
     days_ahead = (weekday_index - today.weekday()) % 7
-    target_date = today + timedelta(days=days_ahead if days_ahead > 0 else 7)
+    target_date = today + timedelta(days_ahead if days_ahead > 0 else 7)
     await state.update_data(target_date=target_date)
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     await callback.message.edit_text(
@@ -343,18 +343,15 @@ async def add_lesson_link(message: Message, state: FSMContext):
         f"🔗 Ссылка: {link}"
     )
 
-    kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="15 мин до",
-                              callback_data="chat_rem:15")],
-        [InlineKeyboardButton(text="1 час до",
-                              callback_data="chat_rem:60")],
-        [InlineKeyboardButton(text="Пропустить",
-                              callback_data="chat_rem:skip")],
+    repeat_kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📌 Единоразово", callback_data="repeat:one_time")],
+        [InlineKeyboardButton(text="🔁 Еженедельно", callback_data="repeat:weekly")],
+        [InlineKeyboardButton(text="🔁 Раз в 2 недели", callback_data="repeat:every_2_weeks")],
+        [InlineKeyboardButton(text="🔁 Ежемесячно", callback_data="repeat:monthly")],
     ]))
     await state.update_data(lesson_id=lesson.id)
-    # 👇 Теперь используем состояние из AddLessonSG
-    await state.set_state(AddLessonSG.chat_reminder)
-    await message.answer(" Создать напоминание для всего чата?",reply_markup=kb)
+    await state.set_state(AddLessonSG.repeat_type)
+    await message.answer("🔄 Как часто проводить это занятие?", reply_markup=repeat_kb)
 
 
 @router.callback_query(F.data.startswith("chat_rem:"),
@@ -386,10 +383,9 @@ async def process_chat_reminder(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    # Создаём напоминание с новым полем chat_id
     await reminder_repo.create(Reminder(
-        user_id=None,  # Для чата пользователь не нужен
-        chat_id=callback.message.chat.id,  # Адресат — группа
+        user_id=None,
+        chat_id=callback.message.chat.id,
         lesson_id=lesson_id,
         reminder_type=ReminderType.LESSON,
         remind_at=remind_at,
@@ -402,6 +398,39 @@ async def process_chat_reminder(callback: CallbackQuery, state: FSMContext):
         f"✅ Напоминание для чата создано!\n⏰ Напомню за {minutes} мин до начала."
     )
     await state.clear()
+    await callback.answer()
+
+
+
+@router.callback_query(F.data.startswith("repeat:"), AddLessonSG.repeat_type)
+async def add_lesson_repeat_type(callback: CallbackQuery, state: FSMContext):
+    repeat_val = callback.data.split(":")[1]
+    data = await state.get_data()
+    lesson_id = data.get("lesson_id")
+
+    if repeat_val != "one_time" and lesson_id:
+        from domain.entities import RepeatType
+        lesson = await lesson_repo.get_by_id(lesson_id)
+        if lesson:
+            lesson.repeat_type = RepeatType(repeat_val)
+            await lesson_repo.update(lesson)
+
+    repeat_texts = {
+        "one_time": "Единоразовое",
+        "weekly": "Еженедельное",
+        "every_2_weeks": "Раз в 2 недели",
+        "monthly": "Ежемесячное",
+    }
+    repeat_label = repeat_texts.get(repeat_val, repeat_val)
+    await callback.message.edit_text(f"✅ Периодичность: {repeat_label}")
+
+    kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="15 мин до", callback_data="chat_rem:15")],
+        [InlineKeyboardButton(text="1 час до", callback_data="chat_rem:60")],
+        [InlineKeyboardButton(text="Пропустить", callback_data="chat_rem:skip")],
+    ]))
+    await state.set_state(AddLessonSG.chat_reminder)
+    await callback.message.answer("📅 Создать напоминание для всего чата?", reply_markup=kb)
     await callback.answer()
 
 
@@ -418,7 +447,7 @@ async def cmd_remove_lesson(message: Message, state: FSMContext):
         return
     user, _ = await get_or_create_user(message)
     try:
-        auth_service.ensure_role(user, [UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER])
+        auth_service.ensure_role(user, [UserRole.ADMIN, UserRole.OWNER])
     except PermissionDeniedException:
         await message.answer("У вас нет доступа к этой команде.")
         return
@@ -455,10 +484,22 @@ async def delete_lesson_cb(callback: CallbackQuery, state: FSMContext):
 @router.message(_PRIVATE, StateFilter("*"), Command("addReminder"))
 async def pm_add_reminder(message: Message, state: FSMContext):
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Себе", callback_data="target:self")],
-        [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
-    ])
+    user, _ = await get_or_create_user(message)
+    if user.role in (UserRole.ADMIN, UserRole.OWNER):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+            [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
+            [InlineKeyboardButton(text="Преподу", callback_data="target:teacher")],
+        ])
+    elif user.role == UserRole.TEACHER:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+            [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
+        ])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+        ])
     await message.answer(
         "Кому напоминание?\n\n❌ Для отмены — /cancel",
         reply_markup=add_cancel_button(kb),
@@ -498,6 +539,22 @@ async def reminder_target(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    if target == "teacher":
+        teachers = await user_repo.get_all_teachers()
+        if not teachers:
+            await answer_or_edit(callback.message, "Нет преподавателей.", state=state)
+            await state.clear()
+            await callback.answer()
+            return
+        kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=t.full_name or t.username, callback_data=f"teacher:{t.telegram_id}")]
+            for t in teachers[:10]
+        ]))
+        await answer_or_edit(callback.message, "Выберите преподавателя:", reply_markup=kb, state=state)
+        await state.set_state(AddReminderSG.teacher)
+        await callback.answer()
+        return
+
     # target == "self"
     if existing_lesson_id:
         # Занятие уже выбрано — сразу к типу напоминания
@@ -533,6 +590,35 @@ async def reminder_student(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    lessons = await lesson_service.upcoming(10)
+    if not lessons:
+        await answer_or_edit(callback.message, "Нет предстоящих занятий.", state=state)
+        await state.clear()
+        await callback.answer()
+        return
+    kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{l.topic} — {_fmt_dt(l.scheduled_at)}",
+            callback_data=f"lesson:{l.id}",
+        )]
+        for l in lessons[:10]
+    ]))
+    await answer_or_edit(callback.message, "Выберите занятие:", reply_markup=kb, state=state)
+    await state.set_state(AddReminderSG.lesson)
+    await callback.answer()
+
+
+
+@router.callback_query(F.data.startswith("teacher:"), AddReminderSG.teacher)
+async def reminder_teacher(callback: CallbackQuery, state: FSMContext):
+    teacher_id = int(callback.data.split(":")[1])
+    await state.update_data(student_id=teacher_id)
+    data = await state.get_data()
+    existing_lesson_id = data.get("lesson_id")
+    if existing_lesson_id:
+        await _ask_reminder_type(callback.message, state)
+        await callback.answer()
+        return
     lessons = await lesson_service.upcoming(10)
     if not lessons:
         await answer_or_edit(callback.message, "Нет предстоящих занятий.", state=state)
@@ -693,10 +779,16 @@ async def _create_reminder(message: Message, state: FSMContext, actor, time_val:
 @router.message(_PRIVATE, StateFilter("*"), Command("removeReminder"))
 async def pm_remove_reminder(message: Message, state: FSMContext):
     await state.clear()
-    kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Себе", callback_data="target:self")],
-        [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
-    ]))
+    user, _ = await get_or_create_user(message)
+    if user.role in (UserRole.ADMIN, UserRole.OWNER, UserRole.TEACHER):
+        kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+            [InlineKeyboardButton(text="Студенту", callback_data="target:student")],
+        ]))
+    else:
+        kb = add_cancel_button(InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Себе", callback_data="target:self")],
+        ]))
     await message.answer("Чьё напоминание удалить?", reply_markup=kb)
     await state.set_state(RemoveReminderSG.target)
 

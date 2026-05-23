@@ -39,7 +39,7 @@ class LessonService:
         Назначает новое занятие.
         Выполняет проверки прав и валидацию данных.
         """
-        if actor.role not in (UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+        if actor.role not in (UserRole.ADMIN, UserRole.OWNER, UserRole.TEACHER):
             raise PermissionDeniedException("No permission to schedule lesson")
         if not topic:
             raise ValidationException("Topic is required")
@@ -161,6 +161,7 @@ class LessonService:
                 duration_minutes=model.duration_minutes,
                 status=LessonStatus(model.status),
                 topic=model.topic,
+                start_notification_level=model.start_notification_level,
                 created_at=model.created_at,
                 updated_at=model.updated_at,
             )
@@ -206,6 +207,7 @@ class LessonService:
                     duration_minutes=model.duration_minutes,
                     status=LessonStatus(model.status),
                     topic=model.topic,
+                    start_notification_level=model.start_notification_level,
                     created_at=model.created_at,
                     updated_at=model.updated_at,
                 )

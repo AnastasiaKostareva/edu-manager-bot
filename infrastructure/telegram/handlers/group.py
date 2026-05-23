@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -15,9 +15,9 @@ from infrastructure.telegram.states import GroupRegSG
 from infrastructure.telegram.handlers.helpers import MSK, get_or_create_user, ensure_chat_exists
 from application.use_cases.chat import ChatService
 from application.use_cases.lesson import LessonService
-from domain.entities import UserRole, LessonStatus
+from domain.entities import UserRole, LessonStatus, RepeatType, Lesson, Reminder
 from infrastructure.database.repositories import (
-    UserRepository, LessonRepository, ChatRepository, ChatMemberRepository,
+    UserRepository, LessonRepository, ChatRepository, ChatMemberRepository, ReminderRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ chat_repo = ChatRepository()
 chat_member_repo = ChatMemberRepository()
 
 lesson_service = LessonService(lesson_repo)
+reminder_repo_grp = ReminderRepository()
 chat_service = ChatService(chat_repo, chat_member_repo, user_repo)
 
 USERNAME_PATTERN = __import__("re").compile(r'^@?([a-zA-Z0-9_]{5,32})$')
@@ -80,6 +81,11 @@ async def start_registration_flow(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if callback.from_user.id != data.get("initiator_id"):
         await callback.answer("❌ Только тот, кто вызвал /start, может регистрировать участников.", show_alert=True)
+        return
+
+    user, _ = await get_or_create_user(callback)
+    if user.role not in (UserRole.ADMIN, UserRole.OWNER):
+        await callback.answer("❌ Только администратор или владелец могут регистрировать участников.", show_alert=True)
         return
 
     await callback.message.edit_text("Введите @username участника или /done для завершения.")
@@ -192,7 +198,6 @@ async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
         await user_repo.update(existing)
         linked_user = existing
     else:
-        # 🔧 Исправлено: callback.message вместо message
         await callback.message.edit_text(
             "🚫 Пользователя нет в базе данных.\n\n"
             "Обратитесь к преподавателю, чтобы он зарегистрировал вас в групповом чате или вручную."
@@ -277,13 +282,83 @@ async def on_complete_lesson(callback: CallbackQuery):
     if lesson.actual_start:
         lesson.duration_minutes = int((lesson.actual_end - lesson.actual_start).total_seconds() / 60)
     await lesson_repo.update(lesson)
+
+    next_lesson_msg = ""
+    if lesson.repeat_type and lesson.repeat_type != RepeatType.ONE_TIME:
+        try:
+            next_l = await _create_next_occurrence(lesson)
+            if next_l:
+                next_lesson_msg = f"\n\n🔁 Следующее занятие автоматически назначено на {_fmt_dt(next_l.scheduled_at)}"
+        except Exception as e:
+            logger.warning(f"Failed to create next occurrence: {e}")
+
     await callback.message.edit_text(
         f"✅ Занятие завершено: {lesson.topic}\n\n"
         f"🕐 Начало: {lesson.actual_start.astimezone(MSK).strftime('%H:%M')} МСК\n"
         f"🕑 Конец: {lesson.actual_end.astimezone(MSK).strftime('%H:%M')} МСК\n"
         f"⏱ Длительность: {lesson.duration_minutes or '—'} мин"
+        + next_lesson_msg
     )
     await callback.answer("Занятие завершено!")
+
+
+async def _create_next_occurrence(lesson: Lesson) -> "Lesson | None":
+    """Создаёт следующее занятие для периодического расписания и копирует напоминания."""
+    repeat_map = {
+        RepeatType.WEEKLY: timedelta(weeks=1),
+        RepeatType.EVERY_2_WEEKS: timedelta(weeks=2),
+        RepeatType.MONTHLY: timedelta(days=30),
+    }
+    delta = repeat_map.get(lesson.repeat_type)
+    if not delta:
+        return None
+
+    sched_at = lesson.scheduled_at
+    if sched_at.tzinfo is None:
+        sched_at = sched_at.replace(tzinfo=MSK)
+    next_scheduled_at = sched_at + delta
+
+    next_scheduled_end = None
+    if lesson.scheduled_end:
+        end = lesson.scheduled_end if lesson.scheduled_end.tzinfo else lesson.scheduled_end.replace(tzinfo=MSK)
+        next_scheduled_end = end + delta
+
+    next_lesson = Lesson(
+        chat_id=lesson.chat_id,
+        created_by=lesson.created_by,
+        scheduled_at=next_scheduled_at,
+        scheduled_end=next_scheduled_end,
+        topic=lesson.topic,
+        lesson_link=lesson.lesson_link,
+        repeat_type=lesson.repeat_type,
+        status=LessonStatus.SCHEDULED,
+    )
+    created = await lesson_repo.create(next_lesson)
+
+    try:
+        now = datetime.now(timezone.utc)
+        old_reminders = await reminder_repo_grp.get_by_lesson_id(lesson.id)
+        for old_rem in old_reminders:
+            if old_rem.remind_at is None:
+                continue
+            old_rem_dt = old_rem.remind_at if old_rem.remind_at.tzinfo else old_rem.remind_at.replace(tzinfo=timezone.utc)
+            offset = sched_at - old_rem_dt
+            new_remind_at = next_scheduled_at - offset
+            if new_remind_at > now:
+                await reminder_repo_grp.create(Reminder(
+                    reminder_type=old_rem.reminder_type,
+                    remind_at=new_remind_at,
+                    user_id=old_rem.user_id,
+                    chat_id=old_rem.chat_id,
+                    creator_id=old_rem.creator_id,
+                    lesson_id=created.id,
+                    custom_text=old_rem.custom_text,
+                    is_sent=False,
+                ))
+    except Exception as e:
+        logger.warning(f"Failed to copy reminders for next occurrence: {e}")
+
+    return created
 
 def _fmt_dt(dt) -> str:
     if dt is None: return "—"

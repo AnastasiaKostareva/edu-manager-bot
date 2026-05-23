@@ -51,3 +51,41 @@ async def test_menu_interrupts_fsm(mock_user):
     assert current_state is None, "Состояние FSM должно быть сброшено кнопкой меню"
 
 
+
+from infrastructure.telegram.keyboards import main_menu_keyboard
+
+
+def test_group_menu_hides_lesson_buttons_from_non_admin():
+    """В групповом чате кнопки управления занятиями не видны студентам и учителям."""
+    for role in (UserRole.STUDENT, UserRole.TEACHER):
+        kb = main_menu_keyboard(role, is_group=True)
+        texts = [btn.text for row in kb.keyboard for btn in row]
+        assert "Добавить занятие" not in texts, f"{role}: не должна видеть 'Добавить занятие'"
+        assert "Удалить занятие" not in texts, f"{role}: не должна видеть 'Удалить занятие'"
+
+
+def test_group_menu_shows_lesson_buttons_to_admin():
+    """В групповом чате OWNER и ADMIN видят кнопки управления занятиями."""
+    for role in (UserRole.ADMIN, UserRole.OWNER):
+        kb = main_menu_keyboard(role, is_group=True)
+        texts = [btn.text for row in kb.keyboard for btn in row]
+        assert "Добавить занятие" in texts, f"{role}: должна видеть 'Добавить занятие'"
+        assert "Удалить занятие" in texts, f"{role}: должна видеть 'Удалить занятие'"
+
+
+def test_private_menu_always_shows_reminder_buttons():
+    """В личных сообщениях кнопки напоминаний видны всем ролям."""
+    for role in (UserRole.STUDENT, UserRole.TEACHER, UserRole.ADMIN, UserRole.OWNER):
+        kb = main_menu_keyboard(role, is_group=False)
+        texts = [btn.text for row in kb.keyboard for btn in row]
+        assert "Добавить напоминание" in texts
+        assert "Удалить напоминание" in texts
+
+
+def test_group_menu_hides_reminder_buttons():
+    """В групповом чате кнопки напоминаний не показываются (работают только в ЛС)."""
+    for role in (UserRole.STUDENT, UserRole.ADMIN, UserRole.OWNER):
+        kb = main_menu_keyboard(role, is_group=True)
+        texts = [btn.text for row in kb.keyboard for btn in row]
+        assert "Добавить напоминание" not in texts
+        assert "Удалить напоминание" not in texts

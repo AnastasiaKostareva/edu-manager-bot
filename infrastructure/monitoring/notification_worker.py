@@ -94,7 +94,15 @@ class NotificationWorker:
 
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-            await self.bot.send_message(reminder.user_id, text)
+            target_id = reminder.chat_id or reminder.user_id
+            if not target_id:
+                logger.warning(f"Reminder {reminder.id} has no target. Skipping.")
+                return
+            await self.bot.send_message(target_id, text)
         else:
-            await self.bot.send_message(reminder.user_id, reminder.custom_text or "Напоминание")
+            target_id = reminder.chat_id or reminder.user_id
+            if not target_id:
+                logger.warning(f"Reminder {reminder.id} has no target. Skipping.")
+                return
+            await self.bot.send_message(target_id, reminder.custom_text or "Напоминание")
 

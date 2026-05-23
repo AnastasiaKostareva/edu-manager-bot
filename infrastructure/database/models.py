@@ -1,5 +1,6 @@
 from tortoise import fields, models
 from tortoise.contrib.postgres import fields as pg_fields
+from domain.entities import StartNotificationLevel
 
 
 class User(models.Model):
@@ -115,7 +116,8 @@ class Lesson(models.Model):
     scheduled_end = fields.DatetimeField(null=True)
     actual_end = fields.DatetimeField(null=True)
     duration_minutes = fields.IntField(null=True)
-    
+    start_notification_level = fields.IntEnumField(StartNotificationLevel, default=StartNotificationLevel.NONE)
+
     status = fields.CharField(
         max_length=50, 
         default='scheduled',
