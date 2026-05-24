@@ -53,3 +53,7 @@ class StartLessonSG(StatesGroup):
 
 class CompleteLessonSG(StatesGroup):
     custom_duration = State()
+
+
+class UserSearchSG(StatesGroup):
+    waiting_for_user_search_query = State()
