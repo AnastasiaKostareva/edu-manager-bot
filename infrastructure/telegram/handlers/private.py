@@ -33,7 +33,7 @@ from infrastructure.telegram.handlers.helpers import (
 )
 from infrastructure.telegram.keyboards import (
     main_menu_keyboard, quick_actions_keyboard, add_cancel_button,
-    build_user_search_results_kb,
+    build_user_search_results_kb, build_weekday_keyboard,
 )
 from infrastructure.telegram.states import (
     AddLessonSG, AddReminderSG, RemoveLessonSG, RemoveReminderSG,
@@ -62,6 +62,14 @@ user_service = UserService(user_repo)
 # Фильтр: только личные сообщения
 _PRIVATE = F.chat.type == "private"
 
+@router.message(StateFilter("*"), Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    current = await state.get_state()
+    if current is None:
+        await message.answer("ℹ️ Нет активного действия для отмены.")
+        return
+    await state.clear()
+    await message.answer("✅ Действие отменено.")
 
 # ─────────────────────────────────────────
 # /start
@@ -133,7 +141,7 @@ async def pm_lessons(message: Message, state: FSMContext):
     await message.answer(text)
 
 
-@router.callback_query(_PRIVATE, F.data == "search_user_start")
+@router.callback_query(F.data == "search_user_start")
 async def pm_user_search_start(callback: CallbackQuery, state: FSMContext):
     actor, _ = await get_or_create_user(callback)
     if actor.role not in (UserRole.ADMIN, UserRole.OWNER):
@@ -173,7 +181,7 @@ async def pm_user_search_query(message: Message, state: FSMContext):
     )
 
 
-@router.callback_query(_PRIVATE, F.data.startswith("search_sel:"))
+@router.callback_query(F.data.startswith("search_sel:"))
 async def pm_user_search_select(callback: CallbackQuery):
     actor, _ = await get_or_create_user(callback)
     if actor.role not in (UserRole.ADMIN, UserRole.OWNER):
@@ -245,7 +253,7 @@ async def _start_add_lesson(message: Message, state: FSMContext):
     await message.answer("Введите тему занятия:\n\n❌ Для отмены — /cancel")
 
 
-@router.message(AddLessonSG.topic)
+@router.message(AddLessonSG.topic, ~Command("cancel"))
 async def add_lesson_topic(message: Message, state: FSMContext):
     data = await state.get_data()
     if message.chat.type != "private" and message.from_user.id != data.get("lesson_author_id"):
@@ -256,34 +264,31 @@ async def add_lesson_topic(message: Message, state: FSMContext):
         return
     await state.update_data(topic=topic)
 
-    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=d, callback_data=f"weekday:{i}")] for i, d in enumerate(days)]
-    )
+    kb = build_weekday_keyboard(datetime.now(MSK).date())
     await message.answer(
-        "Выберите день или введите дату (дд:мм):",
+        "Выберите день или введите дату (дд.мм):",
         reply_markup=kb,
     )
     await state.set_state(AddLessonSG.day_selection)
 
 
-@router.callback_query(F.data.startswith("weekday:"), AddLessonSG.day_selection)
+@router.callback_query(F.data.startswith("weekday_offset:"), AddLessonSG.day_selection)
 async def add_lesson_weekday(callback: CallbackQuery, state: FSMContext):
-    weekday_index = int(callback.data.split(":")[1])
+    offset = int(callback.data.split(":")[1])
     today = datetime.now(MSK).date()
-    days_ahead = (weekday_index - today.weekday()) % 7
-    target_date = today + timedelta(days_ahead if days_ahead > 0 else 7)
+    target_date = today + timedelta(days=offset)
     await state.update_data(target_date=target_date)
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    day_label = day_names[target_date.weekday()]
     await callback.message.edit_text(
-        f"Выбран: {target_date.strftime('%d.%m.%Y')} ({day_names[weekday_index]})\n"
+        f"Выбран: {target_date.strftime('%d.%m.%Y')} ({day_label})\n"
         f"Введите время (чч:мм) по МСК:"
     )
     await state.set_state(AddLessonSG.time)
     await callback.answer()
 
 
-@router.message(AddLessonSG.day_selection)
+@router.message(AddLessonSG.day_selection, ~Command("cancel"))
 async def add_lesson_custom_date(message: Message, state: FSMContext):
     data = await state.get_data()
     if message.chat.type != "private" and message.from_user.id != data.get("lesson_author_id"):
@@ -303,7 +308,7 @@ async def add_lesson_custom_date(message: Message, state: FSMContext):
     await state.set_state(AddLessonSG.time)
 
 
-@router.message(AddLessonSG.time)
+@router.message(AddLessonSG.time, ~Command("cancel"))
 async def add_lesson_time(message: Message, state: FSMContext):
     data = await state.get_data()
     if message.chat.type != "private" and message.from_user.id != data.get("lesson_author_id"):
@@ -1017,11 +1022,6 @@ async def sql_query(message: Message, state: FSMContext):
 # ─────────────────────────────────────────
 # Общие команды
 # ─────────────────────────────────────────
-
-@router.message(StateFilter("*"), Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("✅ Действие отменено.")
 
 
 @router.message(StateFilter("*"), Command("help"))

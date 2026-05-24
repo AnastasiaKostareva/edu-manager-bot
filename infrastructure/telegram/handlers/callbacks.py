@@ -17,8 +17,20 @@ user_repo = UserRepository()
 lesson_repo = LessonRepository()
 
 
-@router.callback_query(F.data == "cancel_action")
+@router.callback_query(F.data.startswith("cancel_action"))
 async def cb_cancel(callback: CallbackQuery, state: FSMContext):
+    # callback_data может быть "cancel_action" (личка) или "cancel_action:{initiator_id}" (группа)
+    parts = callback.data.split(":", 1)
+    if len(parts) == 2:
+        initiator_id = int(parts[1])
+        if callback.from_user.id != initiator_id:
+            await callback.answer(
+                "❌ Только тот, кто начал действие, может его отменить.",
+                show_alert=True,
+            )
+            return
+
+    # Очищаем состояние инициатора, а не нажавшего (они могут различаться)
     await state.clear()
     try:
         await callback.message.edit_text("✅ Действие отменено.")

@@ -220,24 +220,33 @@ class Scheduler:
 
     async def _get_chat_responsible_users(self, chat_id: int):
         members = await self.chat_member_repo.get_members_by_chat(chat_id)
-        if not members:
-            return await self.user_repo.get_all_admins()
 
-        users = []
+        # Собираем активных участников чата
+        chat_users: list = []
         for member in members:
             user = await self.user_repo.get_by_telegram_id(member.user_id)
             if user and user.is_active:
-                users.append(user)
+                chat_users.append(user)
 
-        owners_teachers = [u for u in users if u.role in (UserRole.OWNER, UserRole.TEACHER)]
-        if owners_teachers:
-            return owners_teachers
+        # Глобальные овнеры/админы (могут не быть в chat_members)
+        global_admins = await self.user_repo.get_all_admins()
+        global_owners = [u for u in global_admins if u.role == UserRole.OWNER]
 
-        owners_admins = [u for u in users if u.role in (UserRole.OWNER, UserRole.ADMIN)]
-        if owners_admins:
-            return owners_admins
+        # Объединяем: учителя из участников + все глобальные овнеры
+        teachers_in_chat = [u for u in chat_users if u.role == UserRole.TEACHER]
+        combined = {u.telegram_id: u for u in global_owners}
+        for u in teachers_in_chat:
+            combined.setdefault(u.telegram_id, u)
 
-        return await self.user_repo.get_all_admins()
+        if combined:
+            return list(combined.values())
+
+        # Запасной вариант: все активные участники с ролью выше студента
+        elevated = [u for u in chat_users if u.role in (UserRole.OWNER, UserRole.ADMIN, UserRole.TEACHER)]
+        if elevated:
+            return elevated
+
+        return global_admins or chat_users
 
     def _build_mentions_text(self, users) -> str:
         unique = {u.telegram_id: u for u in users}

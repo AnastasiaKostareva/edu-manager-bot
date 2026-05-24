@@ -136,7 +136,10 @@ async def group_reg_username_input(message: Message, state: FSMContext):
 
     await state.update_data(current_username=match.group(1))
     await state.set_state(GroupRegSG.role_selection)
-    await message.answer(f"Кто @{match.group(1)}?", reply_markup=add_cancel_button(_role_keyboard()))
+    await message.answer(
+        f"Кто @{match.group(1)}?",
+        reply_markup=add_cancel_button(_role_keyboard(), initiator_id=data.get("initiator_id")),
+    )
 
 @router.callback_query(F.data.startswith("reg_role:"), GroupRegSG.role_selection)
 async def group_reg_role_selected(callback: CallbackQuery, state: FSMContext):
@@ -163,7 +166,7 @@ async def group_reg_name_input(message: Message, state: FSMContext):
     role_display = {"student": "Ученик", "teacher": "Преподаватель", "parent": "Родитель"}.get(data["temp_role"], data["temp_role"])
     await message.answer(
         f"@{data['current_username']} — {full_name}, {role_display}\nВсё верно?",
-        reply_markup=add_cancel_button(_confirm_keyboard())
+        reply_markup=add_cancel_button(_confirm_keyboard(), initiator_id=data.get("initiator_id")),
     )
 
 @router.callback_query(F.data.startswith("reg_confirm:"), GroupRegSG.confirmation)
@@ -175,7 +178,10 @@ async def group_reg_confirmation(callback: CallbackQuery, state: FSMContext):
 
     if action == "no":
         await state.set_state(GroupRegSG.role_selection)
-        await callback.message.edit_text(f"Кто @{username}?", reply_markup=add_cancel_button(_role_keyboard()))
+        await callback.message.edit_text(
+            f"Кто @{username}?",
+            reply_markup=add_cancel_button(_role_keyboard(), initiator_id=data.get("initiator_id")),
+        )
         await callback.answer()
         return
 
