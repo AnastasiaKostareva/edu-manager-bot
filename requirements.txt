@@ -7,3 +7,4 @@ tortoise-orm==0.24.2
 aerich==0.9.1
 asyncpg==0.29.0
 anyio>=4.0.0
+aiohttp-socks

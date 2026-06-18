@@ -19,9 +19,7 @@ services:
     command: >
       sh -c "
         python wait_db.py &&
-        echo 'Применение миграций...' &&
         aerich init-db || aerich upgrade &&
-        echo 'Запуск бота...' &&
         python main.py
       "
     environment:
@@ -30,35 +28,32 @@ services:
       DB_USER: edu_user
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: edu_manager
-      ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       TZ: Etc/UTC
       HTTP_PROXY: "http://vless-proxy:8080"
       HTTPS_PROXY: "http://vless-proxy:8080"
-      NO_PROXY: "localhost,127.0.0.1,db"
     volumes:
       - ./appsettings.yaml:/app/appsettings.yaml
     restart: unless-stopped
     networks:
       - app_network
-      - proxy_network
 
   vless-proxy:
-    build: ./VLESS-to-HTTP
+    build: https://github.com/thejohnd0e/VLESS-to-HTTP.git
     container_name: vless-proxy
     restart: unless-stopped
-    volumes:
-      - ./vless.conf:/app/vless.conf:ro
-    ports:
-      - "9000:8080"
-      - "1080:1080"
+    environment:
+      - VLESS_URL=${VLESS_URL}
+    command: >
+      sh -c "
+        echo '${VLESS_URL}' > /app/vless.conf &&
+        /app/entrypoint.sh
+      "
     networks:
-      - proxy_network
+      - app_network
 
 networks:
   app_network:
-    driver: bridge
-  proxy_network:
     driver: bridge
 
 volumes:
