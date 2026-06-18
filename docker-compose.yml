@@ -8,11 +8,14 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - app_network
 
   bot:
     build: .
     depends_on:
       - db
+      - vless-proxy
     command: >
       sh -c "
         python wait_db.py &&
@@ -30,9 +33,33 @@ services:
       ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       TZ: Etc/UTC
+      HTTP_PROXY: "http://vless-proxy:8080"
+      HTTPS_PROXY: "http://vless-proxy:8080"
+      NO_PROXY: "localhost,127.0.0.1,db"
     volumes:
       - ./appsettings.yaml:/app/appsettings.yaml
     restart: unless-stopped
+    networks:
+      - app_network
+      - proxy_network
+
+  vless-proxy:
+    build: ./VLESS-to-HTTP
+    container_name: vless-proxy
+    restart: unless-stopped
+    volumes:
+      - ./vless.conf:/app/vless.conf:ro
+    ports:
+      - "9000:8080"
+      - "1080:1080"
+    networks:
+      - proxy_network
+
+networks:
+  app_network:
+    driver: bridge
+  proxy_network:
+    driver: bridge
 
 volumes:
   postgres_data:
